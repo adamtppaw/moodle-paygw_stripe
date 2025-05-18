@@ -329,6 +329,7 @@ class stripe_helper {
                                 'client' => "web"
                         ],
                 ],
+                'invoice_creation' => ['enabled' => true],
                 'mode' => 'payment',
                 'line_items' => [[
                         'price' => $price,
@@ -366,7 +367,8 @@ class stripe_helper {
                 'billing_address_collection' => 'required',
                 'tax_id_collection' => [
                         'enabled' => true
-                ]
+                ],
+
         ]);
 
         return $session->id;
