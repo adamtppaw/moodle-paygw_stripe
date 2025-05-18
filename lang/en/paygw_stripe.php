@@ -129,3 +129,5 @@ $string['privacy:metadata:stripe_intents:userid'] = 'Moodle user ID';
 $string['privacy:metadata:stripe_subscriptions'] =
     'Stores the relation from subscriptions in Moodle to Stripe subscription objects';
 $string['privacy:metadata:stripe_subscriptions:userid'] = 'Moodle user ID';
+
+$string['stripeinvoices'] = 'Manage Stripe invoices and receipts';
