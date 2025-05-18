@@ -23,23 +23,63 @@
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
+use core_user\output\myprofile\category;
+use core_user\output\myprofile\node;
+use paygw_stripe\stripe_helper;
+
 /**
  * User profile page callback.
  *
- * Used add a section about the subscriptions.
+ * Adds a section for Stripe subscriptions and a link to the Stripe customer portal.
  *
  * @param \core_user\output\myprofile\tree $tree My profile tree where the setting will be added.
  * @param stdClass $user The user object.
- * @param bool $iscurrentuser Is this the current user viewing
- * @return void Return if the mobile web services setting is disabled or if not the current user.
+ * @param bool $iscurrentuser Is this the current user viewing?
+ * @return void
  */
-function paygw_stripe_myprofile_navigation(\core_user\output\myprofile\tree $tree, $user, $iscurrentuser) {
-    if (!$iscurrentuser) {
+function paygw_stripe_myprofile_navigation(\core_user\output\myprofile\tree $tree, stdClass $user, bool $iscurrentuser): void {
+    global $USER, $DB;
+
+    if (!$iscurrentuser || !isloggedin() || isguestuser()) {
         return;
     }
 
-    $tree->add_category(new core_user\output\myprofile\category('paygw_stripe', get_string('profilecat', 'paygw_stripe'),
-        'loginactivity'));
-    $tree->add_node(new core_user\output\myprofile\node('paygw_stripe', 'cancelsubscriptions',
-        get_string('cancelsubscriptions', 'paygw_stripe'), null, new moodle_url('/payment/gateway/stripe/subscriptions.php')));
+    // Add category if it doesn't exist.
+    $tree->add_category(new category('paygw_stripe', get_string('profilecat', 'paygw_stripe'), 'loginactivity'));
+
+    // Link to subscription management.
+    $tree->add_node(new node(
+            'paygw_stripe',
+            'cancelsubscriptions',
+            get_string('cancelsubscriptions', 'paygw_stripe'),
+            null,
+            new moodle_url('/payment/gateway/stripe/subscriptions.php')
+    ));
+
+
+    // Link to customer portal.
+    if ($user_stripe_payments = (array) $DB->get_records(
+            'payments',['userid'=>$USER->id, 'gateway'=>'stripe'],'id DESC', '*',0,1)) {
+        foreach ($user_stripe_payments as $user_stripe_payment) {
+            $config = (object) \core_payment\helper::get_gateway_configuration(
+                    $user_stripe_payment->component,
+                    $user_stripe_payment->paymentarea,
+                    $user_stripe_payment->itemid,
+                    $user_stripe_payment->gateway
+            );
+        };
+        if ($config) {
+            $helper = new \paygw_stripe\stripe_helper($config->apikey, $config->secretkey);
+            $portalurl = $helper->get_customer_portal_url((int) $USER->id);
+        }
+    }
+    if (!empty($portalurl)) {
+        $tree->add_node(new node(
+                'paygw_stripe',
+                'stripeinvoices',
+                get_string('stripeinvoices', 'paygw_stripe'),
+                null,
+                new moodle_url($portalurl)
+        ));
+    }
 }
