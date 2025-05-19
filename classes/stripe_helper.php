@@ -425,6 +425,7 @@ class stripe_helper {
                 'cancel_url' => $CFG->wwwroot . '/payment/gateway/stripe/cancelled.php?component=' . $component . '&paymentarea=' .
                         $paymentarea . '&itemid=' . $itemid,
                 'payment_method_types' => $config->paymentmethods,
+                'invoice_creation' => ['enabled' => true],
                 'mode' => 'subscription',
                 'line_items' => [[
                         'price' => $price,
@@ -450,7 +451,9 @@ class stripe_helper {
                         'address' => 'auto',
                 ],
                 'billing_address_collection' => 'required',
-                'tax_id_collection' => ['enabled' => true]
+                'tax_id_collection' => [
+                        'enabled' => true
+                ]
         ]);
 
         return $session->id;
