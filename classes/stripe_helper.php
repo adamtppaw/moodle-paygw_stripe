@@ -194,6 +194,40 @@ class stripe_helper {
     }
 
     /**
+     * Whether Stripe Tax (automatic_tax) should be enabled for this gateway config.
+     *
+     * The gateway uses a single "taxmode" selector (none|automatic|manual). For backward
+     * compatibility, configs saved before that selector existed only have the legacy
+     * "enableautomatictax" checkbox, which we still honour here.
+     *
+     * @param object $config Gateway configuration
+     * @return bool
+     */
+    private function is_automatic_tax(object $config): bool {
+        if (isset($config->taxmode)) {
+            return $config->taxmode === 'automatic';
+        }
+        return !empty($config->enableautomatictax);
+    }
+
+    /**
+     * Return the manual Stripe Tax Rate ID (txr_...) to apply to line items, or null.
+     *
+     * Only returns a value in "manual" tax mode. Manual tax rates and automatic_tax are
+     * mutually exclusive in Stripe Checkout, so callers must not enable both.
+     *
+     * @param object $config Gateway configuration
+     * @return string|null
+     */
+    private function get_manual_tax_rate(object $config): ?string {
+        if (($config->taxmode ?? '') !== 'manual') {
+            return null;
+        }
+        $rate = trim($config->manualtaxrate ?? '');
+        return $rate !== '' ? $rate : null;
+    }
+
+    /**
      * Get the stripe Customer object from the corresponding Moodle user id.
      *
      * @param int $userid
@@ -262,7 +296,7 @@ class stripe_helper {
             $product = $this->create_product($description, $component, $paymentarea, $itemid);
         }
         if (!$price = $this->get_price($product, is_array($subscription))) {
-            $price = $this->create_price($currency, $product->id, $unitamount, $config->enableautomatictax == 1,
+            $price = $this->create_price($currency, $product->id, $unitamount, $this->is_automatic_tax($config),
                     $config->defaulttaxbehavior, $subscription);
         } else {
             // Check if the price details mismatch in any way.
@@ -274,11 +308,11 @@ class stripe_helper {
                     ($price->type == 'recurring' && !is_array($subscription))) {
                 // We cannot update the price or currency, so we must create a new price.
                 $this->stripe->prices->update($price->id, ['active' => false]);
-                $price = $this->create_price($currency, $product->id, $unitamount, $config->enableautomatictax == 1,
+                $price = $this->create_price($currency, $product->id, $unitamount, $this->is_automatic_tax($config),
                         $config->defaulttaxbehavior, $subscription);
             }
             // Set tax behavior if not set already.
-            if ($config->enableautomatictax == 1 && (!isset($price->tax_behavior) || $price->tax_behavior === 'unspecified')) {
+            if ($this->is_automatic_tax($config) && (!isset($price->tax_behavior) || $price->tax_behavior === 'unspecified')) {
                 $price->updateAttributes(['tax_behavior' => $config->tax_behavior ?? 'inclusive']);
                 $price = $this->stripe->prices->update($price->id, ['tax_behavior' => $config->tax_behavior ?? 'inclusive']);
             }
@@ -318,12 +352,22 @@ class stripe_helper {
             $customer = $this->create_customer($USER);
         }
 
-        $session = $this->stripe->checkout->sessions->create([
+        // Build the line item, attaching a manual Stripe Tax Rate in manual tax mode. Manual
+        // tax_rates and automatic_tax are mutually exclusive in Stripe, so get_manual_tax_rate()
+        // only returns a value when automatic tax is off.
+        $lineitem = [
+                'price' => $price,
+                'quantity' => 1,
+        ];
+        if ($taxrate = $this->get_manual_tax_rate($config)) {
+            $lineitem['tax_rates'] = [$taxrate];
+        }
+
+        $params = [
                 'success_url' => $CFG->wwwroot . '/payment/gateway/stripe/process.php?component=' . $component . '&paymentarea=' .
                         $paymentarea . '&itemid=' . $itemid . '&session_id={CHECKOUT_SESSION_ID}',
                 'cancel_url' => $CFG->wwwroot . '/payment/gateway/stripe/cancelled.php?component=' . $component . '&paymentarea=' .
                         $paymentarea . '&itemid=' . $itemid,
-                'payment_method_types' => $config->paymentmethods,
                 'payment_method_options' => [
                         'wechat_pay' => [
                                 'client' => "web"
@@ -331,12 +375,9 @@ class stripe_helper {
                 ],
                 'invoice_creation' => ['enabled' => true],
                 'mode' => 'payment',
-                'line_items' => [[
-                        'price' => $price,
-                        'quantity' => 1
-                ]],
+                'line_items' => [$lineitem],
                 'automatic_tax' => [
-                        'enabled' => $config->enableautomatictax == 1,
+                        'enabled' => $this->is_automatic_tax($config),
                 ],
                 'customer' => $customer->id,
                 'metadata' => [
@@ -369,7 +410,16 @@ class stripe_helper {
                         'enabled' => true
                 ],
 
-        ]);
+        ];
+
+        // When dynamic payment methods are disabled, restrict the session to the manually
+        // selected methods. When enabled, the parameter is omitted so Stripe uses the methods
+        // configured in the Dashboard (dynamic payment methods), filtered by currency and amount.
+        if (empty($config->usedynamicpaymentmethods)) {
+            $params['payment_method_types'] = $config->paymentmethods;
+        }
+
+        $session = $this->stripe->checkout->sessions->create($params);
 
         return $session->id;
     }
@@ -418,21 +468,31 @@ class stripe_helper {
             $subscriptiondata['trial_end'] = $this->get_trial_end_date($config)->getTimestamp();
         }
 
+        // In manual tax mode, apply the Stripe Tax Rate to the subscription. For recurring
+        // payments Stripe uses subscription_data.default_tax_rates (line_items.tax_rates is only
+        // for one-time payments). Manual tax rates and automatic_tax remain mutually exclusive, so
+        // get_manual_tax_rate() only returns a value when automatic tax is off.
+        $lineitem = [
+                'price' => $price,
+                'quantity' => 1,
+        ];
+        if ($taxrate = $this->get_manual_tax_rate($config)) {
+            $subscriptiondata['default_tax_rates'] = [$taxrate];
+        }
+
         // Create checkout session to set up subscription for customer.
-        $session = $this->stripe->checkout->sessions->create([
+        $params = [
                 'success_url' => $CFG->wwwroot . '/payment/gateway/stripe/process.php?component=' . $component . '&paymentarea=' .
                         $paymentarea . '&itemid=' . $itemid . '&session_id={CHECKOUT_SESSION_ID}',
                 'cancel_url' => $CFG->wwwroot . '/payment/gateway/stripe/cancelled.php?component=' . $component . '&paymentarea=' .
                         $paymentarea . '&itemid=' . $itemid,
-                'payment_method_types' => $config->paymentmethods,
-                'invoice_creation' => ['enabled' => true],
+                // Note: invoice_creation is only valid for mode=payment. For mode=subscription,
+                // Stripe generates an invoice automatically for every billing cycle, so this
+                // parameter must be omitted here (it caused InvalidRequestException otherwise).
                 'mode' => 'subscription',
-                'line_items' => [[
-                        'price' => $price,
-                        'quantity' => 1,
-                ]],
+                'line_items' => [$lineitem],
                 'automatic_tax' => [
-                        'enabled' => $config->enableautomatictax == 1,
+                        'enabled' => $this->is_automatic_tax($config),
                 ],
                 'allow_promotion_codes' => $config->allowpromotioncodes == 1,
                 'subscription_data' => $subscriptiondata,
@@ -454,7 +514,14 @@ class stripe_helper {
                 'tax_id_collection' => [
                         'enabled' => true
                 ]
-        ]);
+        ];
+
+        // See generate_payment(): omit payment_method_types to use dynamic payment methods.
+        if (empty($config->usedynamicpaymentmethods)) {
+            $params['payment_method_types'] = $config->paymentmethods;
+        }
+
+        $session = $this->stripe->checkout->sessions->create($params);
 
         return $session->id;
     }

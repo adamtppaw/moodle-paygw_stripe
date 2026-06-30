@@ -30,6 +30,9 @@ $string['apikey_help'] = 'The API key that we use to identifier ourselves with S
 $string['secretkey'] = 'Secret Key';
 $string['secretkey_help'] = 'Secret key to authenticate with Stripe';
 $string['paymentmethods'] = 'Payment Methods';
+$string['usedynamicpaymentmethods'] = 'Use dynamic payment methods';
+$string['usedynamicpaymentmethods_desc'] = 'Let Stripe automatically display the payment methods that are enabled in your Stripe Dashboard (Settings &gt; Payment methods), filtered by currency, amount and customer location. When enabled, the manual "Payment Methods" list below is ignored.';
+$string['usedynamicpaymentmethods_help'] = 'When enabled, the plugin no longer sends a fixed list of payment methods to Stripe. Instead it relies on the payment methods you have turned on and ordered in the Stripe Dashboard. This lets you add or remove methods (for example BLIK, P24, Apple Pay, Google Pay) without changing any plugin settings. When disabled, only the methods selected in the "Payment Methods" list are offered.';
 $string['allowpromotioncodes'] = 'Allow Promotion Codes';
 $string['gatewaydescription'] = 'Stripe is an authorised payment gateway provider for processing credit card transactions.';
 $string['stripeaccount'] = 'Stripe account ID';
@@ -40,8 +43,19 @@ $string['paymentpending'] = 'Payment is pending, you will be enrolled when the p
 $string['customerdescription'] = 'Moodle User ID: {$a}';
 $string['enableautomatictax'] = 'Enable automatic tax';
 $string['enableautomatictax_desc'] = 'Automatic tax must be enabled and configured in the Stripe dashboard.';
+$string['taxmode'] = 'Tax mode';
+$string['taxmode_help'] = 'How the plugin handles VAT/tax on payments. These modes are mutually exclusive (Stripe does not allow combining automatic tax with manual tax rates):<br/>
+<b>No tax</b> – the plugin adds no tax.<br/>
+<b>Stripe Tax (automatic)</b> – Stripe calculates tax automatically based on your registrations and the customer\'s location. Requires Stripe Tax to be set up in the Dashboard (origin address, tax registrations, and a product tax code other than the default non-taxable one).<br/>
+<b>Manual tax rate</b> – a fixed tax rate you created in the Stripe Dashboard (e.g. Polish VAT 23%) is applied to every line item. This is the free "Tax rates" feature and does not require Stripe Tax.';
+$string['taxmode:none'] = 'No tax';
+$string['taxmode:automatic'] = 'Stripe Tax (automatic)';
+$string['taxmode:manual'] = 'Manual tax rate';
+$string['manualtaxrate'] = 'Manual tax rate ID';
+$string['manualtaxrate_help'] = 'The ID of a Stripe Tax Rate to apply to every line item, in the form <code>txr_...</code>. Create the rate in the Stripe Dashboard under Product catalogue &gt; Tax rates (set the country, percentage, and whether it is inclusive or exclusive there). The ID is mode-specific: a test-mode rate ID is not valid in live mode, so use the rate created in the same Stripe account/mode as this gateway\'s keys. Only used when the tax mode is "Manual tax rate".';
+$string['manualtaxrate_required'] = 'A tax rate ID is required when the tax mode is set to "Manual tax rate".';
 $string['defaulttaxbehavior'] = 'Default tax behavior';
-$string['defaulttaxbehavior_help'] = 'Default behavior of tax (inclusive, exclusive). Changeable in Stripe dashboard.';
+$string['defaulttaxbehavior_help'] = 'Default behavior of tax (inclusive, exclusive) for Stripe Tax. Only applies to the automatic tax mode; for manual tax rates this is set on the tax rate itself in the Stripe dashboard.';
 $string['profilecat'] = 'Stripe Payment Subscriptions';
 $string['cancelsubscriptions'] = 'Change Subscriptions';
 $string['subscriptions'] = 'Subscriptions';
