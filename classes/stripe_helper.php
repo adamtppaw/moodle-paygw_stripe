@@ -89,6 +89,10 @@ class stripe_helper {
     /**
      * Find a product in the database and the corresponding Stripe Product item.
      *
+     * Returns null when the stored product is archived (active = false) in Stripe. An archived
+     * product cannot receive new prices and cannot be used as a Checkout line item, so we treat
+     * it as missing and drop the stale mapping, letting the caller create a fresh product.
+     *
      * @param string $component
      * @param string $paymentarea
      * @param string $itemid
@@ -101,7 +105,16 @@ class stripe_helper {
         if ($record = $DB->get_record('paygw_stripe_products',
                 ['component' => $component, 'paymentarea' => $paymentarea, 'itemid' => $itemid])) {
             try {
-                return $this->stripe->products->retrieve($record->productid);
+                $product = $this->stripe->products->retrieve($record->productid);
+                // An archived (inactive) product cannot receive new prices and cannot be used in a
+                // Checkout Session. Treat it as missing: delete the stale mapping so the caller
+                // creates a brand new active product instead of failing the payment.
+                if (empty($product->active)) {
+                    $DB->delete_records('paygw_stripe_products',
+                            ['component' => $component, 'paymentarea' => $paymentarea, 'itemid' => $itemid]);
+                    return null;
+                }
+                return $product;
             } catch (ApiErrorException $e) {
                 // Product exists in Moodle but not in stripe, possibly the keys were switched.
                 // Delete product for creation later.
