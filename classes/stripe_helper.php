@@ -397,11 +397,75 @@ class stripe_helper {
         $customer = $this->stripe->customers->create([
                 'email' => $user->email,
                 'description' => get_string('customerdescription', 'paygw_stripe', $user->id),
+                'metadata' => $this->build_customer_metadata($user),
         ]);
         $record = new \stdClass();
         $record->userid = $user->id;
         $record->customerid = $customer->id;
         $DB->insert_record('paygw_stripe_customers', $record);
+        return $customer;
+    }
+
+    /**
+     * Build the Stripe metadata describing the Moodle user a customer represents.
+     *
+     * Keys are prefixed with "moodle_" to avoid collisions with metadata set elsewhere.
+     * Only identifying/reconciliation data is included (not billing details, which Stripe
+     * collects and stores as structured Customer fields). Conditional fields are omitted when
+     * empty and every value is clamped to Stripe's 500-character limit; the key count stays
+     * well below Stripe's 50-key cap.
+     *
+     * @param \stdClass $user
+     * @return array<string, string>
+     */
+    private function build_customer_metadata($user): array {
+        global $CFG;
+
+        $metadata = [
+                'moodle_user_id' => (string) $user->id,
+                'moodle_username' => (string) ($user->username ?? ''),
+                'moodle_site' => $CFG->wwwroot,
+        ];
+
+        $fullname = trim(fullname($user));
+        if ($fullname !== '') {
+            $metadata['moodle_user_fullname'] = $fullname;
+        }
+
+        // Institutional identifiers, only when the Moodle profile actually holds them.
+        $optional = [
+                'idnumber' => 'moodle_user_idnumber',
+                'institution' => 'moodle_institution',
+                'department' => 'moodle_department',
+        ];
+        foreach ($optional as $field => $key) {
+            if (isset($user->$field) && trim((string) $user->$field) !== '') {
+                $metadata[$key] = (string) $user->$field;
+            }
+        }
+
+        foreach ($metadata as $key => $value) {
+            $metadata[$key] = mb_substr((string) $value, 0, 500);
+        }
+
+        return $metadata;
+    }
+
+    /**
+     * Backfill/refresh the moodle_* metadata on a Stripe customer, idempotently. Customers
+     * created before this metadata existed, or whose Moodle profile changed, are updated
+     * lazily on their next payment. The update is skipped when nothing is missing or stale.
+     *
+     * @param Customer $customer
+     * @param \stdClass $user
+     * @return Customer
+     * @throws ApiErrorException
+     */
+    private function sync_customer_metadata(Customer $customer, $user): Customer {
+        $desired = $this->build_customer_metadata($user);
+        if ($this->metadata_needs_update($customer->metadata ?? null, $desired)) {
+            $customer = $this->stripe->customers->update($customer->id, ['metadata' => $desired]);
+        }
         return $customer;
     }
 
@@ -494,6 +558,8 @@ class stripe_helper {
         if (!$customer = $this->get_customer($USER->id)) {
             $customer = $this->create_customer($USER);
         }
+        // Ensure an existing customer carries up-to-date moodle_* metadata (idempotent).
+        $customer = $this->sync_customer_metadata($customer, $USER);
 
         // Build the line item, attaching a manual Stripe Tax Rate in manual tax mode. Manual
         // tax_rates and automatic_tax are mutually exclusive in Stripe, so get_manual_tax_rate()
@@ -595,6 +661,8 @@ class stripe_helper {
         if (!$customer = $this->get_customer($USER->id)) {
             $customer = $this->create_customer($USER);
         }
+        // Ensure an existing customer carries up-to-date moodle_* metadata (idempotent).
+        $customer = $this->sync_customer_metadata($customer, $USER);
 
         // If anchored billing and/or trial period are enabled, set up the subscriptiondata parameter.
         $subscriptiondata = [];
