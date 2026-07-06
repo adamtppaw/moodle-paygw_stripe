@@ -89,6 +89,10 @@ class stripe_helper {
     /**
      * Find a product in the database and the corresponding Stripe Product item.
      *
+     * Returns null when the stored product is archived (active = false) in Stripe. An archived
+     * product cannot receive new prices and cannot be used as a Checkout line item, so we treat
+     * it as missing and drop the stale mapping, letting the caller create a fresh product.
+     *
      * @param string $component
      * @param string $paymentarea
      * @param string $itemid
@@ -101,7 +105,16 @@ class stripe_helper {
         if ($record = $DB->get_record('paygw_stripe_products',
                 ['component' => $component, 'paymentarea' => $paymentarea, 'itemid' => $itemid])) {
             try {
-                return $this->stripe->products->retrieve($record->productid);
+                $product = $this->stripe->products->retrieve($record->productid);
+                // An archived (inactive) product cannot receive new prices and cannot be used in a
+                // Checkout Session. Treat it as missing: delete the stale mapping so the caller
+                // creates a brand new active product instead of failing the payment.
+                if (empty($product->active)) {
+                    $DB->delete_records('paygw_stripe_products',
+                            ['component' => $component, 'paymentarea' => $paymentarea, 'itemid' => $itemid]);
+                    return null;
+                }
+                return $product;
             } catch (ApiErrorException $e) {
                 // Product exists in Moodle but not in stripe, possibly the keys were switched.
                 // Delete product for creation later.
@@ -127,7 +140,8 @@ class stripe_helper {
     public function create_product(string $description, string $component, string $paymentarea, string $itemid): Product {
         global $DB;
         $product = $this->stripe->products->create([
-                'name' => $description
+                'name' => $description,
+                'metadata' => $this->build_product_metadata($component, $paymentarea, $itemid),
         ]);
         $record = new \stdClass();
         $record->productid = $product->id;
@@ -136,6 +150,126 @@ class stripe_helper {
         $record->itemid = $itemid;
         $DB->insert_record('paygw_stripe_products', $record);
         return $product;
+    }
+
+    /**
+     * Build the Stripe metadata describing the Moodle item a product represents.
+     *
+     * Keys are prefixed with "moodle_" to avoid collisions with metadata set elsewhere
+     * (e.g. manually in the Dashboard). The method is component-aware: for enrol_fee the
+     * itemid is an enrol instance id, so we resolve the owning course and enrolment method.
+     * For any other component only the generic technical keys are returned. Empty values
+     * are omitted so we never push blank metadata, and every value is clamped to Stripe's
+     * 500-character limit. The set of keys is intentionally well below Stripe's 50-key cap.
+     *
+     * @param string $component
+     * @param string $paymentarea
+     * @param string $itemid
+     * @return array<string, string>
+     */
+    private function build_product_metadata(string $component, string $paymentarea, string $itemid): array {
+        global $CFG, $DB;
+
+        $metadata = [
+                'moodle_component' => $component,
+                'moodle_paymentarea' => $paymentarea,
+                'moodle_site' => $CFG->wwwroot,
+        ];
+
+        // For enrol_fee the itemid is an enrol instance id (enrol.id), not a course id.
+        $resolved = false;
+        if ($component === 'enrol_fee') {
+            if ($enrol = $DB->get_record('enrol', ['enrol' => 'fee', 'id' => $itemid])) {
+                $resolved = true;
+                $metadata['moodle_enrol_id'] = (string) $enrol->id;
+
+                // get_instance_name() returns a human label even when enrol.name is empty
+                // (it falls back to the plugin's default name), so it is never blank.
+                if ($enrolplugin = enrol_get_plugin('fee')) {
+                    $enrolname = trim((string) $enrolplugin->get_instance_name($enrol));
+                    if ($enrolname !== '') {
+                        $metadata['moodle_enrol_name'] = $enrolname;
+                    }
+                }
+
+                if ($course = $DB->get_record('course', ['id' => $enrol->courseid])) {
+                    // Pass the course context explicitly to format_string(): this runs from pay.php,
+                    // which does not set $PAGE->context, and format_string() would otherwise emit a
+                    // "$PAGE->context was not set" debugging notice while falling back to it.
+                    $coursecontext = \context_course::instance($course->id);
+                    $metadata['moodle_course_id'] = (string) $course->id;
+                    if (trim((string) $course->idnumber) !== '') {
+                        $metadata['moodle_course_idnumber'] = (string) $course->idnumber;
+                    }
+                    if (trim((string) $course->fullname) !== '') {
+                        $metadata['moodle_course_fullname'] = format_string($course->fullname, true,
+                                ['context' => $coursecontext]);
+                    }
+                    if (trim((string) $course->shortname) !== '') {
+                        $metadata['moodle_course_shortname'] = format_string($course->shortname, true,
+                                ['context' => $coursecontext]);
+                    }
+                    $metadata['moodle_course_url'] =
+                            (new moodle_url('/course/view.php', ['id' => $course->id]))->out(false);
+                }
+            }
+        }
+
+        // Always keep a generic identifier when we could not resolve an enrol instance
+        // (unknown component, or a stale/deleted enrol row).
+        if (!$resolved) {
+            $metadata['moodle_itemid'] = (string) $itemid;
+        }
+
+        foreach ($metadata as $key => $value) {
+            $metadata[$key] = mb_substr((string) $value, 0, 500);
+        }
+
+        return $metadata;
+    }
+
+    /**
+     * Whether a Stripe product's existing metadata is missing any of the desired keys or
+     * holds a different value for one of them. Used to keep metadata updates idempotent so
+     * we do not issue a needless products->update on every payment. Extra keys already on the
+     * product (e.g. set manually in the Dashboard) are ignored and preserved by Stripe's merge.
+     *
+     * @param mixed $existing Stripe metadata (StripeObject, array or null)
+     * @param array $desired Desired moodle_* metadata
+     * @return bool
+     */
+    private function metadata_needs_update($existing, array $desired): bool {
+        if ($existing === null) {
+            $existingarr = [];
+        } else if (is_array($existing)) {
+            $existingarr = $existing;
+        } else {
+            // \Stripe\StripeObject.
+            $existingarr = $existing->toArray();
+        }
+        foreach ($desired as $key => $value) {
+            if (!array_key_exists($key, $existingarr) || (string) $existingarr[$key] !== (string) $value) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The subset of course metadata (id and idnumber) to attach to a payment / subscription,
+     * so the charge, invoice and subscription can be reconciled with the Moodle course in
+     * Stripe. Returns an empty array for components/items where a course cannot be resolved.
+     *
+     * @param string $component
+     * @param string $paymentarea
+     * @param string $itemid
+     * @return array<string, string>
+     */
+    private function course_reference_metadata(string $component, string $paymentarea, string $itemid): array {
+        return array_intersect_key(
+                $this->build_product_metadata($component, $paymentarea, $itemid),
+                ['moodle_course_id' => true, 'moodle_course_idnumber' => true]
+        );
     }
 
     /**
@@ -263,11 +397,75 @@ class stripe_helper {
         $customer = $this->stripe->customers->create([
                 'email' => $user->email,
                 'description' => get_string('customerdescription', 'paygw_stripe', $user->id),
+                'metadata' => $this->build_customer_metadata($user),
         ]);
         $record = new \stdClass();
         $record->userid = $user->id;
         $record->customerid = $customer->id;
         $DB->insert_record('paygw_stripe_customers', $record);
+        return $customer;
+    }
+
+    /**
+     * Build the Stripe metadata describing the Moodle user a customer represents.
+     *
+     * Keys are prefixed with "moodle_" to avoid collisions with metadata set elsewhere.
+     * Only identifying/reconciliation data is included (not billing details, which Stripe
+     * collects and stores as structured Customer fields). Conditional fields are omitted when
+     * empty and every value is clamped to Stripe's 500-character limit; the key count stays
+     * well below Stripe's 50-key cap.
+     *
+     * @param \stdClass $user
+     * @return array<string, string>
+     */
+    private function build_customer_metadata($user): array {
+        global $CFG;
+
+        $metadata = [
+                'moodle_user_id' => (string) $user->id,
+                'moodle_username' => (string) ($user->username ?? ''),
+                'moodle_site' => $CFG->wwwroot,
+        ];
+
+        $fullname = trim(fullname($user));
+        if ($fullname !== '') {
+            $metadata['moodle_user_fullname'] = $fullname;
+        }
+
+        // Institutional identifiers, only when the Moodle profile actually holds them.
+        $optional = [
+                'idnumber' => 'moodle_user_idnumber',
+                'institution' => 'moodle_institution',
+                'department' => 'moodle_department',
+        ];
+        foreach ($optional as $field => $key) {
+            if (isset($user->$field) && trim((string) $user->$field) !== '') {
+                $metadata[$key] = (string) $user->$field;
+            }
+        }
+
+        foreach ($metadata as $key => $value) {
+            $metadata[$key] = mb_substr((string) $value, 0, 500);
+        }
+
+        return $metadata;
+    }
+
+    /**
+     * Backfill/refresh the moodle_* metadata on a Stripe customer, idempotently. Customers
+     * created before this metadata existed, or whose Moodle profile changed, are updated
+     * lazily on their next payment. The update is skipped when nothing is missing or stale.
+     *
+     * @param Customer $customer
+     * @param \stdClass $user
+     * @return Customer
+     * @throws ApiErrorException
+     */
+    private function sync_customer_metadata(Customer $customer, $user): Customer {
+        $desired = $this->build_customer_metadata($user);
+        if ($this->metadata_needs_update($customer->metadata ?? null, $desired)) {
+            $customer = $this->stripe->customers->update($customer->id, ['metadata' => $desired]);
+        }
         return $customer;
     }
 
@@ -322,6 +520,15 @@ class stripe_helper {
             $product = $this->stripe->products->update($product->id, ['name' => $description]);
         }
 
+        // Backfill/refresh metadata on the product. Products created before this feature
+        // existed (or whose course details changed) are updated lazily on the next payment.
+        // The update is skipped unless something is actually missing or stale, so we do not
+        // issue a redundant API call on every checkout.
+        $desiredmetadata = $this->build_product_metadata($component, $paymentarea, $itemid);
+        if ($this->metadata_needs_update($product->metadata ?? null, $desiredmetadata)) {
+            $product = $this->stripe->products->update($product->id, ['metadata' => $desiredmetadata]);
+        }
+
         return [$product, $price];
     }
 
@@ -351,6 +558,8 @@ class stripe_helper {
         if (!$customer = $this->get_customer($USER->id)) {
             $customer = $this->create_customer($USER);
         }
+        // Ensure an existing customer carries up-to-date moodle_* metadata (idempotent).
+        $customer = $this->sync_customer_metadata($customer, $USER);
 
         // Build the line item, attaching a manual Stripe Tax Rate in manual tax mode. Manual
         // tax_rates and automatic_tax are mutually exclusive in Stripe, so get_manual_tax_rate()
@@ -362,6 +571,19 @@ class stripe_helper {
         if ($taxrate = $this->get_manual_tax_rate($config)) {
             $lineitem['tax_rates'] = [$taxrate];
         }
+
+        // Attach the course reference (id + idnumber) to the payment so the charge, the
+        // payment_intent and the resulting invoice can be tied back to the Moodle course
+        // directly in Stripe, without a lookup in the Moodle database.
+        $sessionmetadata = array_merge([
+                'userid' => $USER->id,
+                'username' => $USER->username,
+                'firstname' => $USER->firstname,
+                'lastname' => $USER->lastname,
+                'component' => $component,
+                'paymentarea' => $paymentarea,
+                'itemid' => $itemid,
+        ], $this->course_reference_metadata($component, $paymentarea, $itemid));
 
         $params = [
                 'success_url' => $CFG->wwwroot . '/payment/gateway/stripe/process.php?component=' . $component . '&paymentarea=' .
@@ -380,25 +602,9 @@ class stripe_helper {
                         'enabled' => $this->is_automatic_tax($config),
                 ],
                 'customer' => $customer->id,
-                'metadata' => [
-                        'userid' => $USER->id,
-                        'username' => $USER->username,
-                        'firstname' => $USER->firstname,
-                        'lastname' => $USER->lastname,
-                        'component' => $component,
-                        'paymentarea' => $paymentarea,
-                        'itemid' => $itemid,
-                ],
+                'metadata' => $sessionmetadata,
                 'payment_intent_data' => [
-                        'metadata' => [
-                                'userid' => $USER->id,
-                                'username' => $USER->username,
-                                'firstname' => $USER->firstname,
-                                'lastname' => $USER->lastname,
-                                'component' => $component,
-                                'paymentarea' => $paymentarea,
-                                'itemid' => $itemid,
-                        ],
+                        'metadata' => $sessionmetadata,
                 ],
                 'allow_promotion_codes' => $config->allowpromotioncodes == 1,
                 'customer_update' => [
@@ -455,6 +661,8 @@ class stripe_helper {
         if (!$customer = $this->get_customer($USER->id)) {
             $customer = $this->create_customer($USER);
         }
+        // Ensure an existing customer carries up-to-date moodle_* metadata (idempotent).
+        $customer = $this->sync_customer_metadata($customer, $USER);
 
         // If anchored billing and/or trial period are enabled, set up the subscriptiondata parameter.
         $subscriptiondata = [];
@@ -480,6 +688,23 @@ class stripe_helper {
             $subscriptiondata['default_tax_rates'] = [$taxrate];
         }
 
+        // Attach the course reference (id + idnumber) to the checkout session and to the
+        // subscription itself, so the subscription and its recurring invoices can be tied
+        // back to the Moodle course directly in Stripe.
+        $coursereference = $this->course_reference_metadata($component, $paymentarea, $itemid);
+        $sessionmetadata = array_merge([
+                'userid' => $USER->id,
+                'username' => $USER->username,
+                'firstname' => $USER->firstname,
+                'lastname' => $USER->lastname,
+                'component' => $component,
+                'paymentarea' => $paymentarea,
+                'itemid' => $itemid,
+        ], $coursereference);
+        if (!empty($coursereference)) {
+            $subscriptiondata['metadata'] = array_merge($subscriptiondata['metadata'] ?? [], $coursereference);
+        }
+
         // Create checkout session to set up subscription for customer.
         $params = [
                 'success_url' => $CFG->wwwroot . '/payment/gateway/stripe/process.php?component=' . $component . '&paymentarea=' .
@@ -497,15 +722,7 @@ class stripe_helper {
                 'allow_promotion_codes' => $config->allowpromotioncodes == 1,
                 'subscription_data' => $subscriptiondata,
                 'customer' => $customer->id,
-                'metadata' => [
-                        'userid' => $USER->id,
-                        'username' => $USER->username,
-                        'firstname' => $USER->firstname,
-                        'lastname' => $USER->lastname,
-                        'component' => $component,
-                        'paymentarea' => $paymentarea,
-                        'itemid' => $itemid,
-                ],
+                'metadata' => $sessionmetadata,
                 'customer_update' => [
                         'name' => 'auto',
                         'address' => 'auto',
