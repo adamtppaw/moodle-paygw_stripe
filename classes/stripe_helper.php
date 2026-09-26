@@ -180,6 +180,48 @@ class stripe_helper {
     }
 
     /**
+     * Build the name of the Stripe product (and the payment description) for a payment item.
+     *
+     * The name is built on the server and never taken from the request: the description
+     * passed to pay.php is part of the URL (user-editable) and localised in the buyer's
+     * language, which used to rename the product whenever someone bought it with a different
+     * interface language. The name shows up on the Checkout page, the invoice line and in
+     * reports, so it has to be stable.
+     *
+     * For courses: "Kurs online: <course full name>", or "Online course: <course full name>"
+     * when the course forces a language other than Polish. The full name is formatted in the
+     * forced course language (or the site default language), not in the current user's.
+     * Items that are not courses fall back to the normalised description.
+     *
+     * @param string $component
+     * @param string $itemid
+     * @param string $fallback Description to use when the item is not a course.
+     * @return string
+     */
+    public function build_product_name(string $component, string $itemid, string $fallback): string {
+        global $CFG, $DB;
+
+        if (($enrol = self::resolve_enrol_instance($component, $itemid))
+                && ($course = $DB->get_record('course', ['id' => $enrol->courseid]))) {
+            $courselang = trim((string) $course->lang);
+            $polish = $courselang === '' || $courselang === 'pl' || strpos($courselang, 'pl_') === 0;
+            $prefix = $polish ? 'Kurs online: ' : 'Online course: ';
+
+            // Format (e.g. multilang filter) in a fixed language, independent of the buyer.
+            $previous = force_current_language($courselang !== '' ? $courselang : ($CFG->lang ?? ''));
+            try {
+                $fullname = format_string($course->fullname, true,
+                        ['context' => \context_course::instance($course->id)]);
+            } finally {
+                force_current_language($previous);
+            }
+            return mb_substr($prefix . trim($fullname), 0, 250);
+        }
+
+        return mb_substr(trim(preg_replace('/\s+/u', ' ', $fallback)), 0, 250);
+    }
+
+    /**
      * Build the Stripe metadata describing the Moodle item a product represents.
      *
      * Keys are prefixed with "moodle_" to avoid collisions with metadata set elsewhere
@@ -208,6 +250,9 @@ class stripe_helper {
         $resolved = false;
         if ($enrol = self::resolve_enrol_instance($component, $itemid)) {
             $resolved = true;
+            // Kind of item sold. Only courses exist today; other product types (e.g. bundles,
+            // all-access plans) will set their own value.
+            $metadata['moodle_product_type'] = 'course';
             $metadata['moodle_enrol_id'] = (string) $enrol->id;
 
             // get_instance_name() returns a human label even when enrol.name is empty
@@ -528,6 +573,8 @@ class stripe_helper {
             string $paymentarea, string $itemid, array $subscription = null) {
         $unitamount = $this->get_unit_amount($cost, $payable->get_currency());
         $currency = strtolower($payable->get_currency());
+        // The product name is built on the server; the request description is only a fallback.
+        $description = $this->build_product_name($component, $itemid, $description);
 
         if (!$product = $this->get_product($component, $paymentarea, $itemid)) {
             $product = $this->create_product($description, $component, $paymentarea, $itemid);
@@ -624,11 +671,8 @@ class stripe_helper {
         // in the Moodle database.
         $sessionmetadata = $this->build_payment_metadata($USER, $component, $paymentarea, $itemid);
 
-        // Label for the payments list. Taken from the course resolved on the server; the
-        // $description passed to pay.php comes from the URL (user-editable, and enrol_feestripe
-        // renders it with template whitespace), so it is only a normalised fallback.
-        $paymentlabel = $sessionmetadata['moodle_course_fullname']
-                ?? trim(preg_replace('/\s+/u', ' ', $description));
+        // Label for the payments list: the same name as the product (see build_product_name()).
+        $paymentlabel = $this->build_product_name($component, $itemid, $description);
 
         $params = [
                 'success_url' => $CFG->wwwroot . '/payment/gateway/stripe/process.php?component=' . $component . '&paymentarea=' .
