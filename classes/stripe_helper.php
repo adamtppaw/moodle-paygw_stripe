@@ -188,8 +188,9 @@ class stripe_helper {
      * interface language. The name shows up on the Checkout page, the invoice line and in
      * reports, so it has to be stable.
      *
-     * For courses: "Kurs online: <course full name>", or "Online course: <course full name>"
-     * when the course forces a language other than Polish. The full name is formatted in the
+     * For courses: "Rejestracja na <course full name>", or "Registration for <course full name>"
+     * when the course forces a language other than Polish. The prefix does not name the type of
+     * content, so the same format works for other kinds of items. The full name is formatted in the
      * forced course language (or the site default language), not in the current user's.
      * Items that are not courses fall back to the normalised description.
      *
@@ -205,7 +206,7 @@ class stripe_helper {
                 && ($course = $DB->get_record('course', ['id' => $enrol->courseid]))) {
             $courselang = trim((string) $course->lang);
             $polish = $courselang === '' || $courselang === 'pl' || strpos($courselang, 'pl_') === 0;
-            $prefix = $polish ? 'Kurs online: ' : 'Online course: ';
+            $prefix = $polish ? 'Rejestracja na ' : 'Registration for ';
 
             // Format (e.g. multilang filter) in a fixed language, independent of the buyer.
             $previous = force_current_language($courselang !== '' ? $courselang : ($CFG->lang ?? ''));
