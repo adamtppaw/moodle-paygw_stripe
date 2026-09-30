@@ -153,11 +153,82 @@ class stripe_helper {
     }
 
     /**
+     * Resolve the enrolment instance a payment item belongs to.
+     *
+     * For enrolment plugins that sell access through core_payment (enrol_fee and its forks,
+     * e.g. enrol_feestripe) the itemid is an enrol instance id (enrol.id), not a course id.
+     * The plugin name is derived from the component instead of being hard-coded, and the
+     * fetched instance must be of that very plugin, so an itemid of another component (or a
+     * stale/reused one) never resolves to an unrelated course.
+     *
+     * @param string $component e.g. enrol_fee, enrol_feestripe
+     * @param int|string $itemid
+     * @return \stdClass|null The mdl_enrol record, or null when the item is not an enrol instance.
+     */
+    public static function resolve_enrol_instance(string $component, $itemid): ?\stdClass {
+        global $DB;
+
+        if (strpos($component, 'enrol_') !== 0 || empty($itemid)) {
+            return null;
+        }
+        $enroltype = substr($component, strlen('enrol_'));
+        $enrol = $DB->get_record('enrol', ['id' => $itemid]);
+        if (!$enrol || $enrol->enrol !== $enroltype) {
+            return null;
+        }
+        return $enrol;
+    }
+
+    /**
+     * Build the name of the Stripe product (and the payment description) for a payment item.
+     *
+     * The name is built on the server and never taken from the request: the description
+     * passed to pay.php is part of the URL (user-editable) and localised in the buyer's
+     * language, which used to rename the product whenever someone bought it with a different
+     * interface language. The name shows up on the Checkout page, the invoice line and in
+     * reports, so it has to be stable.
+     *
+     * For courses: "Rejestracja na <course full name>", or "Registration for <course full name>"
+     * when the course forces a language other than Polish. The prefix does not name the type of
+     * content, so the same format works for other kinds of items. The full name is formatted in the
+     * forced course language (or the site default language), not in the current user's.
+     * Items that are not courses fall back to the normalised description.
+     *
+     * @param string $component
+     * @param string $itemid
+     * @param string $fallback Description to use when the item is not a course.
+     * @return string
+     */
+    public function build_product_name(string $component, string $itemid, string $fallback): string {
+        global $CFG, $DB;
+
+        if (($enrol = self::resolve_enrol_instance($component, $itemid))
+                && ($course = $DB->get_record('course', ['id' => $enrol->courseid]))) {
+            $courselang = trim((string) $course->lang);
+            $polish = $courselang === '' || $courselang === 'pl' || strpos($courselang, 'pl_') === 0;
+            $prefix = $polish ? 'Rejestracja na ' : 'Registration for ';
+
+            // Format (e.g. multilang filter) in a fixed language, independent of the buyer.
+            $previous = force_current_language($courselang !== '' ? $courselang : ($CFG->lang ?? ''));
+            try {
+                $fullname = format_string($course->fullname, true,
+                        ['context' => \context_course::instance($course->id)]);
+            } finally {
+                force_current_language($previous);
+            }
+            return mb_substr($prefix . trim($fullname), 0, 250);
+        }
+
+        return mb_substr(trim(preg_replace('/\s+/u', ' ', $fallback)), 0, 250);
+    }
+
+    /**
      * Build the Stripe metadata describing the Moodle item a product represents.
      *
      * Keys are prefixed with "moodle_" to avoid collisions with metadata set elsewhere
-     * (e.g. manually in the Dashboard). The method is component-aware: for enrol_fee the
-     * itemid is an enrol instance id, so we resolve the owning course and enrolment method.
+     * (e.g. manually in the Dashboard). The method is component-aware: for enrolment plugins
+     * (any enrol_* component, see resolve_enrol_instance()) the itemid is an enrol instance id,
+     * so we resolve the owning course and enrolment method.
      * For any other component only the generic technical keys are returned. Empty values
      * are omitted so we never push blank metadata, and every value is clamped to Stripe's
      * 500-character limit. The set of keys is intentionally well below Stripe's 50-key cap.
@@ -176,42 +247,43 @@ class stripe_helper {
                 'moodle_site' => $CFG->wwwroot,
         ];
 
-        // For enrol_fee the itemid is an enrol instance id (enrol.id), not a course id.
+        // For enrolment plugins the itemid is an enrol instance id, not a course id.
         $resolved = false;
-        if ($component === 'enrol_fee') {
-            if ($enrol = $DB->get_record('enrol', ['enrol' => 'fee', 'id' => $itemid])) {
-                $resolved = true;
-                $metadata['moodle_enrol_id'] = (string) $enrol->id;
+        if ($enrol = self::resolve_enrol_instance($component, $itemid)) {
+            $resolved = true;
+            // Kind of item sold. Only courses exist today; other product types (e.g. bundles,
+            // all-access plans) will set their own value.
+            $metadata['moodle_product_type'] = 'course';
+            $metadata['moodle_enrol_id'] = (string) $enrol->id;
 
-                // get_instance_name() returns a human label even when enrol.name is empty
-                // (it falls back to the plugin's default name), so it is never blank.
-                if ($enrolplugin = enrol_get_plugin('fee')) {
-                    $enrolname = trim((string) $enrolplugin->get_instance_name($enrol));
-                    if ($enrolname !== '') {
-                        $metadata['moodle_enrol_name'] = $enrolname;
-                    }
+            // get_instance_name() returns a human label even when enrol.name is empty
+            // (it falls back to the plugin's default name), so it is never blank.
+            if ($enrolplugin = enrol_get_plugin($enrol->enrol)) {
+                $enrolname = trim((string) $enrolplugin->get_instance_name($enrol));
+                if ($enrolname !== '') {
+                    $metadata['moodle_enrol_name'] = $enrolname;
                 }
+            }
 
-                if ($course = $DB->get_record('course', ['id' => $enrol->courseid])) {
-                    // Pass the course context explicitly to format_string(): this runs from pay.php,
-                    // which does not set $PAGE->context, and format_string() would otherwise emit a
-                    // "$PAGE->context was not set" debugging notice while falling back to it.
-                    $coursecontext = \context_course::instance($course->id);
-                    $metadata['moodle_course_id'] = (string) $course->id;
-                    if (trim((string) $course->idnumber) !== '') {
-                        $metadata['moodle_course_idnumber'] = (string) $course->idnumber;
-                    }
-                    if (trim((string) $course->fullname) !== '') {
-                        $metadata['moodle_course_fullname'] = format_string($course->fullname, true,
-                                ['context' => $coursecontext]);
-                    }
-                    if (trim((string) $course->shortname) !== '') {
-                        $metadata['moodle_course_shortname'] = format_string($course->shortname, true,
-                                ['context' => $coursecontext]);
-                    }
-                    $metadata['moodle_course_url'] =
-                            (new moodle_url('/course/view.php', ['id' => $course->id]))->out(false);
+            if ($course = $DB->get_record('course', ['id' => $enrol->courseid])) {
+                // Pass the course context explicitly to format_string(): this runs from pay.php,
+                // which does not set $PAGE->context, and format_string() would otherwise emit a
+                // "$PAGE->context was not set" debugging notice while falling back to it.
+                $coursecontext = \context_course::instance($course->id);
+                $metadata['moodle_course_id'] = (string) $course->id;
+                if (trim((string) $course->idnumber) !== '') {
+                    $metadata['moodle_course_idnumber'] = (string) $course->idnumber;
                 }
+                if (trim((string) $course->fullname) !== '') {
+                    $metadata['moodle_course_fullname'] = format_string($course->fullname, true,
+                            ['context' => $coursecontext]);
+                }
+                if (trim((string) $course->shortname) !== '') {
+                    $metadata['moodle_course_shortname'] = format_string($course->shortname, true,
+                            ['context' => $coursecontext]);
+                }
+                $metadata['moodle_course_url'] =
+                        (new moodle_url('/course/view.php', ['id' => $course->id]))->out(false);
             }
         }
 
@@ -256,20 +328,33 @@ class stripe_helper {
     }
 
     /**
-     * The subset of course metadata (id and idnumber) to attach to a payment / subscription,
-     * so the charge, invoice and subscription can be reconciled with the Moodle course in
-     * Stripe. Returns an empty array for components/items where a course cannot be resolved.
+     * Build the metadata attached to a payment: the Checkout Session, the payment intent, the
+     * subscription and the generated invoice. It describes both the course being bought and the
+     * Moodle user buying it, so a payment can be identified in the Stripe Dashboard without a
+     * lookup in the Moodle database.
      *
+     * The first block holds the historical, unprefixed keys. webhook.php and
+     * process_stripe_event() read component/paymentarea/itemid from them and payments made
+     * before this change carry only those, so they are deliberately kept as they are; the
+     * moodle_* keys are added alongside them, never instead of them.
+     *
+     * @param \stdClass $user
      * @param string $component
      * @param string $paymentarea
      * @param string $itemid
      * @return array<string, string>
      */
-    private function course_reference_metadata(string $component, string $paymentarea, string $itemid): array {
-        return array_intersect_key(
-                $this->build_product_metadata($component, $paymentarea, $itemid),
-                ['moodle_course_id' => true, 'moodle_course_idnumber' => true]
-        );
+    private function build_payment_metadata($user, string $component, string $paymentarea, string $itemid): array {
+        return array_merge([
+                'userid' => $user->id,
+                'username' => $user->username,
+                'firstname' => $user->firstname,
+                'lastname' => $user->lastname,
+                'component' => $component,
+                'paymentarea' => $paymentarea,
+                'itemid' => $itemid,
+        ], $this->build_product_metadata($component, $paymentarea, $itemid),
+                $this->build_customer_metadata($user));
     }
 
     /**
@@ -489,6 +574,8 @@ class stripe_helper {
             string $paymentarea, string $itemid, array $subscription = null) {
         $unitamount = $this->get_unit_amount($cost, $payable->get_currency());
         $currency = strtolower($payable->get_currency());
+        // The product name is built on the server; the request description is only a fallback.
+        $description = $this->build_product_name($component, $itemid, $description);
 
         if (!$product = $this->get_product($component, $paymentarea, $itemid)) {
             $product = $this->create_product($description, $component, $paymentarea, $itemid);
@@ -525,6 +612,14 @@ class stripe_helper {
         // The update is skipped unless something is actually missing or stale, so we do not
         // issue a redundant API call on every checkout.
         $desiredmetadata = $this->build_product_metadata($component, $paymentarea, $itemid);
+        // moodle_itemid is only set when the course could not be resolved. Stripe merges metadata
+        // on update, so once the course resolves the stale key has to be removed explicitly
+        // (an empty value deletes a key). Only sent when present, otherwise every checkout would
+        // see it as "missing" and update the product again.
+        $existingmetadata = isset($product->metadata) ? $product->metadata->toArray() : [];
+        if (!isset($desiredmetadata['moodle_itemid']) && array_key_exists('moodle_itemid', $existingmetadata)) {
+            $desiredmetadata['moodle_itemid'] = '';
+        }
         if ($this->metadata_needs_update($product->metadata ?? null, $desiredmetadata)) {
             $product = $this->stripe->products->update($product->id, ['metadata' => $desiredmetadata]);
         }
@@ -572,18 +667,13 @@ class stripe_helper {
             $lineitem['tax_rates'] = [$taxrate];
         }
 
-        // Attach the course reference (id + idnumber) to the payment so the charge, the
-        // payment_intent and the resulting invoice can be tied back to the Moodle course
-        // directly in Stripe, without a lookup in the Moodle database.
-        $sessionmetadata = array_merge([
-                'userid' => $USER->id,
-                'username' => $USER->username,
-                'firstname' => $USER->firstname,
-                'lastname' => $USER->lastname,
-                'component' => $component,
-                'paymentarea' => $paymentarea,
-                'itemid' => $itemid,
-        ], $this->course_reference_metadata($component, $paymentarea, $itemid));
+        // Describe the course and the buyer on the payment, so the Checkout Session, the
+        // payment_intent and the resulting invoice can all be read in Stripe without a lookup
+        // in the Moodle database.
+        $sessionmetadata = $this->build_payment_metadata($USER, $component, $paymentarea, $itemid);
+
+        // Label for the payments list: the same name as the product (see build_product_name()).
+        $paymentlabel = $this->build_product_name($component, $itemid, $description);
 
         $params = [
                 'success_url' => $CFG->wwwroot . '/payment/gateway/stripe/process.php?component=' . $component . '&paymentarea=' .
@@ -595,7 +685,14 @@ class stripe_helper {
                                 'client' => "web"
                         ],
                 ],
-                'invoice_creation' => ['enabled' => true],
+                'invoice_creation' => [
+                        'enabled' => true,
+                        // An invoice inherits no metadata from the payment that generated it,
+                        // so the same set has to be attached explicitly.
+                        'invoice_data' => [
+                                'metadata' => $sessionmetadata,
+                        ],
+                ],
                 'mode' => 'payment',
                 'line_items' => [$lineitem],
                 'automatic_tax' => [
@@ -605,6 +702,9 @@ class stripe_helper {
                 'metadata' => $sessionmetadata,
                 'payment_intent_data' => [
                         'metadata' => $sessionmetadata,
+                        // Fills the "Description" column of the Stripe payments list, so the
+                        // course is visible without opening the payment.
+                        'description' => $paymentlabel,
                 ],
                 'allow_promotion_codes' => $config->allowpromotioncodes == 1,
                 'customer_update' => [
@@ -688,22 +788,12 @@ class stripe_helper {
             $subscriptiondata['default_tax_rates'] = [$taxrate];
         }
 
-        // Attach the course reference (id + idnumber) to the checkout session and to the
-        // subscription itself, so the subscription and its recurring invoices can be tied
-        // back to the Moodle course directly in Stripe.
-        $coursereference = $this->course_reference_metadata($component, $paymentarea, $itemid);
-        $sessionmetadata = array_merge([
-                'userid' => $USER->id,
-                'username' => $USER->username,
-                'firstname' => $USER->firstname,
-                'lastname' => $USER->lastname,
-                'component' => $component,
-                'paymentarea' => $paymentarea,
-                'itemid' => $itemid,
-        ], $coursereference);
-        if (!empty($coursereference)) {
-            $subscriptiondata['metadata'] = array_merge($subscriptiondata['metadata'] ?? [], $coursereference);
-        }
+        // Describe the course and the buyer on the checkout session and on the subscription
+        // itself. Recurring invoices do not copy the subscription's metadata into their own
+        // metadata; Stripe exposes it on each invoice as subscription_details.metadata, so
+        // renewals can still be tied to the course and the buyer.
+        $sessionmetadata = $this->build_payment_metadata($USER, $component, $paymentarea, $itemid);
+        $subscriptiondata['metadata'] = array_merge($subscriptiondata['metadata'] ?? [], $sessionmetadata);
 
         // Create checkout session to set up subscription for customer.
         $params = [
@@ -1132,11 +1222,19 @@ class stripe_helper {
         $DB->update_record('paygw_stripe_subscriptions', $datum);
 
         $product = $DB->get_record('paygw_stripe_products', ['productid' => $moodlesub->productid]);
-        if ($product->component == 'enrol_fee') {
-            // A course was the product. Let's unenrol the user.
-            $instance = $DB->get_record('enrol', ['enrol' => 'fee', 'id' => $product->itemid], '*', MUST_EXIST);
-            $plugin = enrol_get_plugin('fee');
-            $plugin->unenrol_user($instance, $moodlesub->userid);
+        if (!$product) {
+            return;
+        }
+        // A course was the product (any enrolment plugin, e.g. enrol_fee or enrol_feestripe).
+        // Unenrol through the instance's own plugin: enrol_plugin::unenrol_user() refuses an
+        // instance that belongs to a different plugin.
+        if ($instance = self::resolve_enrol_instance($product->component, $product->itemid)) {
+            if ($plugin = enrol_get_plugin($instance->enrol)) {
+                $plugin->unenrol_user($instance, $moodlesub->userid);
+            }
+        } else if (strpos($product->component, 'enrol_') === 0) {
+            debugging('paygw_stripe: enrol instance ' . $product->itemid . ' (' . $product->component .
+                    ') not found, user ' . $moodlesub->userid . ' was not unenrolled.', DEBUG_DEVELOPER);
         }
     }
 

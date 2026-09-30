@@ -33,11 +33,9 @@ $itemid = optional_param('itemid', null, PARAM_INT);
 
 $url = new moodle_url('/');
 
-if ($component == 'enrol_fee' && $paymentarea == 'fee') {
-    $courseid = $DB->get_field('enrol', 'courseid', ['enrol' => 'fee', 'id' => $itemid]);
-    if (!empty($courseid)) {
-        $url = course_get_url($courseid);
-    }
+// Return to the course for any enrolment plugin (enrol_fee, enrol_feestripe, ...).
+if ($component && $instance = \paygw_stripe\stripe_helper::resolve_enrol_instance($component, $itemid)) {
+    $url = course_get_url($instance->courseid);
 }
 
 redirect($url, get_string('paymentcancelled', 'paygw_stripe'));
