@@ -180,6 +180,46 @@ class stripe_helper {
     }
 
     /**
+     * Check whether an enrolment instance can still be bought right now.
+     *
+     * pay.php can be opened from a direct link, which bypasses the checks Moodle does
+     * before showing the "Buy" button. Payment is refused when:
+     *  - the course is hidden and the user cannot see hidden courses,
+     *  - the enrolment plugin is disabled on the site or the instance is disabled,
+     *  - enrolment has not started yet or has already ended (enrolstartdate / enrolenddate).
+     *
+     * These are standard columns of mdl_enrol, so the check works for enrol_fee and its
+     * forks (e.g. enrol_feestripe) alike. Already completed payments are not affected:
+     * process.php still delivers what was paid for.
+     *
+     * @param \stdClass $instance The mdl_enrol record (see resolve_enrol_instance()).
+     * @return string|null Language string identifier (paygw_stripe) with the reason, or null when purchase is allowed.
+     */
+    public static function get_purchase_unavailable_reason(\stdClass $instance): ?string {
+        global $DB;
+
+        $course = $DB->get_record('course', ['id' => $instance->courseid], 'id, visible');
+        if (!$course) {
+            return 'purchaseunavailable_coursehidden';
+        }
+        $context = \context_course::instance($course->id);
+        if (!$course->visible && !has_capability('moodle/course:viewhiddencourses', $context)) {
+            return 'purchaseunavailable_coursehidden';
+        }
+        if (!enrol_is_enabled($instance->enrol) || (int) $instance->status !== ENROL_INSTANCE_ENABLED) {
+            return 'purchaseunavailable_enroldisabled';
+        }
+        $now = time();
+        if (!empty($instance->enrolstartdate) && $instance->enrolstartdate > $now) {
+            return 'purchaseunavailable_notstarted';
+        }
+        if (!empty($instance->enrolenddate) && $instance->enrolenddate < $now) {
+            return 'purchaseunavailable_ended';
+        }
+        return null;
+    }
+
+    /**
      * Build the name of the Stripe product (and the payment description) for a payment item.
      *
      * The name is built on the server and never taken from the request: the description
