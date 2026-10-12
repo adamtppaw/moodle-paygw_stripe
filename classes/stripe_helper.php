@@ -429,14 +429,14 @@ class stripe_helper {
      *
      * @param string $currency Currency
      * @param string $productid Product ID
-     * @param float $unitamount Price
+     * @param int $unitamount Price in the smallest currency unit
      * @param bool $automatictax Toggles insertion of a tax behavior
      * @param string|null $defaultbehavior The default tax behavior for the price, if enabled
      * @param array|null $recurring
      * @return Price
      * @throws ApiErrorException
      */
-    public function create_price(string $currency, string $productid, float $unitamount, bool $automatictax,
+    public function create_price(string $currency, string $productid, int $unitamount, bool $automatictax,
             ?string $defaultbehavior, array $recurring = null) {
         $pricedata = [
                 'currency' => $currency,
@@ -926,15 +926,19 @@ class stripe_helper {
     /**
      * Convert the cost into the unit amount accounting for zero-decimal currencies.
      *
+     * The result is rounded to a whole number of minor units. Multiplying a float by 100 is not exact
+     * (79.99 * 100 = 7998.999999999999), and Stripe stores unit amounts as integers, so an unrounded
+     * value never compares equal to the stored price and a new price was created on every checkout.
+     *
      * @param float $cost
      * @param string $currency
-     * @return float
+     * @return int
      */
-    public function get_unit_amount(float $cost, string $currency): float {
+    public function get_unit_amount(float $cost, string $currency): int {
         if (in_array(strtoupper($currency), gateway::get_zero_decimal_currencies())) {
-            return $cost;
+            return (int) round($cost);
         }
-        return $cost * 100;
+        return (int) round($cost * 100);
     }
 
     /**
