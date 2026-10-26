@@ -145,6 +145,7 @@ $string['privacy:metadata:stripe_subscriptions'] =
 $string['privacy:metadata:stripe_subscriptions:userid'] = 'Moodle user ID';
 
 $string['stripeinvoices'] = 'Manage Stripe invoices and receipts';
+$string['purchaseunavailable_alreadyenrolled'] = 'You already have active access, so there is nothing to pay for.';
 $string['purchaseunavailable_coursehidden'] = 'This course is no longer available for purchase.';
 $string['purchaseunavailable_enroldisabled'] = 'Enrolment in this course is closed, so it cannot be purchased.';
 $string['purchaseunavailable_ended'] = 'Enrolment in this course has ended, so it can no longer be purchased.';

@@ -199,16 +199,27 @@ class stripe_helper {
      * bought from a direct link to pay.php placed outside the course. One-time payments for
      * hidden courses are still refused, so hiding a course still withdraws it from sale.
      *
+     * When $userid is given, payment is also refused while that user already has active access
+     * through this very instance (see is_enrolled_via_instance()). Paying again would only charge
+     * the user twice: a second subscription, or a second one-time payment for the same course.
+     * Access gained another way (e.g. a course of a subscription plan) does not block buying the
+     * course itself, so a subscriber can still buy lifetime access to a single course.
+     *
      * @param \stdClass $instance The mdl_enrol record (see resolve_enrol_instance()).
      * @param bool $subscription Whether the payment account of the instance is in subscription mode.
+     * @param int|null $userid User who wants to pay; null skips the "already enrolled" check.
      * @return string|null Language string identifier (paygw_stripe) with the reason, or null when purchase is allowed.
      */
-    public static function get_purchase_unavailable_reason(\stdClass $instance, bool $subscription = false): ?string {
+    public static function get_purchase_unavailable_reason(\stdClass $instance, bool $subscription = false,
+            ?int $userid = null): ?string {
         global $DB;
 
         $course = $DB->get_record('course', ['id' => $instance->courseid], 'id, visible');
         if (!$course) {
             return 'purchaseunavailable_coursehidden';
+        }
+        if ($userid && self::is_enrolled_via_instance($instance, $userid)) {
+            return 'purchaseunavailable_alreadyenrolled';
         }
         $context = \context_course::instance($course->id);
         if (!$course->visible && !$subscription && !has_capability('moodle/course:viewhiddencourses', $context)) {
@@ -225,6 +236,33 @@ class stripe_helper {
             return 'purchaseunavailable_ended';
         }
         return null;
+    }
+
+    /**
+     * Whether a user currently has active access through a given enrolment instance.
+     *
+     * Active means: the user enrolment exists, is not suspended and is within its start and end
+     * dates. A suspended or expired enrolment does not count, so access can be bought again.
+     *
+     * @param \stdClass $instance The mdl_enrol record.
+     * @param int $userid
+     * @return bool
+     */
+    public static function is_enrolled_via_instance(\stdClass $instance, int $userid): bool {
+        global $DB;
+
+        $ue = $DB->get_record('user_enrolments', ['enrolid' => $instance->id, 'userid' => $userid]);
+        if (!$ue || (int) $ue->status !== ENROL_USER_ACTIVE) {
+            return false;
+        }
+        $now = time();
+        if (!empty($ue->timestart) && $ue->timestart > $now) {
+            return false;
+        }
+        if (!empty($ue->timeend) && $ue->timeend < $now) {
+            return false;
+        }
+        return true;
     }
 
     /**

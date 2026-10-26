@@ -42,11 +42,17 @@ $issubscription = isset($config->type) && $config->type === 'subscription';
 // A direct link to this page bypasses the checks Moodle does before showing the "Buy" button,
 // so refuse payment for courses that are hidden or no longer open for enrolment.
 // Hidden courses can still be bought with a subscription account (subscription plans).
+// A user who already has active access through this instance cannot pay for it again
+// (e.g. a direct link shown to enrolled users as well).
 if ($instance = stripe_helper::resolve_enrol_instance($component, $itemid)) {
-    if ($reason = stripe_helper::get_purchase_unavailable_reason($instance, $issubscription)) {
-        $returnurl = $reason === 'purchaseunavailable_coursehidden'
-            ? new moodle_url('/')
-            : new moodle_url('/course/view.php', ['id' => $instance->courseid]);
+    if ($reason = stripe_helper::get_purchase_unavailable_reason($instance, $issubscription, $USER->id)) {
+        if ($reason === 'purchaseunavailable_coursehidden') {
+            $returnurl = new moodle_url('/');
+        } else if ($reason === 'purchaseunavailable_alreadyenrolled') {
+            $returnurl = stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id);
+        } else {
+            $returnurl = new moodle_url('/course/view.php', ['id' => $instance->courseid]);
+        }
         redirect($returnurl, get_string($reason, 'paygw_stripe'), null, \core\output\notification::NOTIFY_WARNING);
     }
 }
