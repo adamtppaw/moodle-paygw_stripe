@@ -1045,10 +1045,12 @@ class stripe_helper {
      * Retrieve Stipe subscription details and save in Moodle based on Stripe checkout session.
      *
      * @param Session $session
-     * @return void
+     * @param int|null $userid Owner of the subscription; defaults to the current user. The webhook
+     *     passes the user from the session metadata, as it runs without a user session.
+     * @return \Stripe\Subscription
      * @throws \dml_exception
      */
-    private function save_subscription(Session $session) {
+    private function save_subscription(Session $session, ?int $userid = null): \Stripe\Subscription {
         global $DB, $USER;
 
         $subscription = $this->stripe->subscriptions->retrieve($session->subscription);
@@ -1057,11 +1059,11 @@ class stripe_helper {
         if ($datum != null) {
             $datum->status = $subscription->status;
             $DB->update_record('paygw_stripe_subscriptions', $datum);
-            return;
+            return $subscription;
         }
 
         $datum = new \stdClass();
-        $datum->userid = $USER->id;
+        $datum->userid = $userid ?? $USER->id;
         $datum->subscriptionid = $session->subscription;
         $datum->customerid = $session->customer->id;
         $datum->status = $subscription->status;
@@ -1069,16 +1071,18 @@ class stripe_helper {
         $datum->priceid = $session->line_items->first()->price->id;
 
         $DB->insert_record('paygw_stripe_subscriptions', $datum);
+        return $subscription;
     }
 
     /**
      * Save payment intent status with customer and product details.
      *
      * @param Session $session
+     * @param int|null $userid Buyer; defaults to the current user (see save_subscription()).
      * @return void
      * @throws \dml_exception
      */
-    private function save_payment_intent(Session $session) {
+    private function save_payment_intent(Session $session, ?int $userid = null) {
         global $DB, $USER;
 
         $intent = $DB->get_record('paygw_stripe_intents', ['paymentintent' => $session->payment_intent]);
@@ -1090,7 +1094,7 @@ class stripe_helper {
         }
 
         $intent = new \stdClass();
-        $intent->userid = $USER->id;
+        $intent->userid = $userid ?? $USER->id;
         $intent->paymentintent = $session->payment_intent;
         $intent->customerid = $session->customer->id;
         $intent->amounttotal = $session->amount_total;
@@ -1135,6 +1139,49 @@ class stripe_helper {
         $paymentid = helper::save_payment($payable->get_account_id(), $component, $paymentarea,
                 $itemid, $userid, $cost, $payable->get_currency(), 'stripe');
         helper::deliver_order($component, $paymentarea, $itemid, $paymentid, $userid);
+    }
+
+    /**
+     * Deliver the course unless it has already been delivered for this payment.
+     *
+     * The same payment can be delivered from two places: process.php when the buyer comes back
+     * from Stripe, and the webhook (checkout.session.completed or
+     * checkout.session.async_payment_succeeded), which also works when the buyer never comes back.
+     * Whichever runs first delivers; the other sees that the user already has active access through
+     * the enrolment instance and skips, so no second payment record is saved in Moodle. A lock
+     * prevents both from delivering when they run at the same time.
+     *
+     * For items that are not enrolment instances there is nothing to check, so they are delivered
+     * every time (the previous behaviour).
+     *
+     * @param string $component
+     * @param string $paymentarea
+     * @param int $itemid
+     * @param int $userid
+     * @return bool True if the course was delivered now, false if it had already been delivered.
+     */
+    public function deliver_course_once(string $component, string $paymentarea, int $itemid, int $userid): bool {
+        $instance = self::resolve_enrol_instance($component, $itemid);
+        if (!$instance) {
+            $this->deliver_course($component, $paymentarea, $itemid, $userid);
+            return true;
+        }
+
+        $lockfactory = \core\lock\lock_config::get_lock_factory('paygw_stripe');
+        $lock = $lockfactory->get_lock("deliver_{$instance->id}_{$userid}", 30);
+        if (!$lock) {
+            // Another request is delivering this very payment right now.
+            return false;
+        }
+        try {
+            if (self::is_enrolled_via_instance($instance, $userid)) {
+                return false;
+            }
+            $this->deliver_course($component, $paymentarea, $itemid, $userid);
+            return true;
+        } finally {
+            $lock->release();
+        }
     }
 
     /**
@@ -1206,13 +1253,54 @@ class stripe_helper {
      * @throws ApiErrorException|\dml_exception
      */
     public function process_stripe_event(Event $event, array $metadata): bool {
-        global $DB;
+        global $CFG, $DB;
 
         if (!isset($event->data->object)) {
             return false;
         }
 
         switch ($event->type) {
+            // A Checkout Session was completed. Until now the course was delivered only by
+            // process.php, i.e. when the buyer came back from Stripe to Moodle; a closed tab or a
+            // lost connection meant a paid purchase without access. The webhook now saves the
+            // payment and delivers the course as well. Delivery is idempotent (deliver_course_once()),
+            // so it does not matter whether process.php or the webhook runs first.
+            case 'checkout.session.completed':
+                $session = $this->stripe->checkout->sessions->retrieve($event->data->object->id,
+                        ['expand' => ['line_items', 'customer']]);
+                // Events are sent to all subscribed webhooks: skip sessions created by another site
+                // using the same Stripe account and sessions not created by this plugin (no buyer).
+                $sessionsite = $session->metadata['moodle_site'] ?? null;
+                if ($sessionsite !== null && $sessionsite !== $CFG->wwwroot) {
+                    return false;
+                }
+                $userid = (int) ($session->metadata['userid'] ?? 0);
+                if (!$userid || !$DB->record_exists('user', ['id' => $userid, 'deleted' => 0])) {
+                    return false;
+                }
+
+                if ($session->mode === 'subscription') {
+                    $subscription = $this->save_subscription($session, $userid);
+                    if (in_array($subscription->status, ['incomplete', 'incomplete_expired', 'canceled'])) {
+                        // Same rule as process.php: no access for a subscription that is not active.
+                        return true;
+                    }
+                } else if ($session->mode === 'payment') {
+                    // No payment intent when nothing had to be paid (e.g. a 100% coupon).
+                    if ($session->payment_intent != null) {
+                        $this->save_payment_intent($session, $userid);
+                    }
+                    // Delayed payment methods complete the session before the money arrives; the
+                    // course is then delivered on checkout.session.async_payment_succeeded.
+                    if (!in_array($session->payment_status, ['paid', 'no_payment_required'])) {
+                        return true;
+                    }
+                } else {
+                    return false;
+                }
+
+                $this->deliver_course_once($metadata['component'], $metadata['paymentarea'], $metadata['itemid'], $userid);
+                break;
             // Process an async payment event.
             // Deliver the course if payment was successful or notify the user the payment failed.
             case 'checkout.session.async_payment_succeeded':
@@ -1223,8 +1311,9 @@ class stripe_helper {
                 }
                 $this->save_payment_status($session->id); // Update saved intent status.
 
-                // Deliver course.
-                $this->deliver_course($metadata['component'], $metadata['paymentarea'], $metadata['itemid'], $intentrecord->userid);
+                // Deliver course (skipped if it was already delivered for this payment).
+                $this->deliver_course_once($metadata['component'], $metadata['paymentarea'], $metadata['itemid'],
+                        $intentrecord->userid);
 
                 // Notify user payment was successful.
                 $url = self::get_return_url($metadata['component'], $metadata['paymentarea'], $metadata['itemid'],

@@ -40,7 +40,14 @@ if ($jsonpayload == null) {
     http_response_code(400);
     exit();
 }
-$metadata = $jsonpayload['data']['object']['metadata'];
+$metadata = $jsonpayload['data']['object']['metadata'] ?? [];
+// Objects not created by this plugin (e.g. Checkout Sessions of Payment Links, which also send
+// checkout.session.completed) carry no Moodle metadata. Accept them without doing anything,
+// otherwise Stripe would keep retrying the delivery and report the endpoint as failing.
+if (empty($metadata['component']) || empty($metadata['paymentarea']) || empty($metadata['itemid'])) {
+    http_response_code(202);
+    exit();
+}
 $config =
     (object) helper::get_gateway_configuration($metadata['component'], $metadata['paymentarea'], $metadata['itemid'], 'stripe');
 $stripehelper = new stripe_helper($config->apikey, $config->secretkey);

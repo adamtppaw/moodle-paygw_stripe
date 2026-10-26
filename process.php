@@ -47,7 +47,7 @@ $sessionmode = $stripehelper->get_sessionmode($sessionid);
 if ($sessionmode === 'subscription') {
     $subscriptionstatus = $stripehelper->get_subscription_status($sessionid);
     if (!in_array($subscriptionstatus, ['incomplete', 'incomplete_expired', 'canceled'])) {
-        $stripehelper->deliver_course($component, $paymentarea, $itemid, $USER->id);
+        $stripehelper->deliver_course_once($component, $paymentarea, $itemid, $USER->id);
 
         // Find redirection ("My courses" when the course is hidden, e.g. a subscription course).
         $url = stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id);
@@ -57,7 +57,7 @@ if ($sessionmode === 'subscription') {
     }
 } else if ($sessionmode === 'payment') {
     if ($stripehelper->is_paid($sessionid)) {
-        $stripehelper->deliver_course($component, $paymentarea, $itemid, $USER->id);
+        $stripehelper->deliver_course_once($component, $paymentarea, $itemid, $USER->id);
 
         // Find redirection.
         $url = stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id);
