@@ -36,10 +36,14 @@ $itemid = required_param('itemid', PARAM_INT);
 $description = urldecode(required_param('description', PARAM_TEXT));
 $sessionid = optional_param('session_id', null, PARAM_TEXT);
 
+$config = (object) helper::get_gateway_configuration($component, $paymentarea, $itemid, 'stripe');
+$issubscription = isset($config->type) && $config->type === 'subscription';
+
 // A direct link to this page bypasses the checks Moodle does before showing the "Buy" button,
 // so refuse payment for courses that are hidden or no longer open for enrolment.
+// Hidden courses can still be bought with a subscription account (subscription plans).
 if ($instance = stripe_helper::resolve_enrol_instance($component, $itemid)) {
-    if ($reason = stripe_helper::get_purchase_unavailable_reason($instance)) {
+    if ($reason = stripe_helper::get_purchase_unavailable_reason($instance, $issubscription)) {
         $returnurl = $reason === 'purchaseunavailable_coursehidden'
             ? new moodle_url('/')
             : new moodle_url('/course/view.php', ['id' => $instance->courseid]);
@@ -47,7 +51,6 @@ if ($instance = stripe_helper::resolve_enrol_instance($component, $itemid)) {
     }
 }
 
-$config = (object) helper::get_gateway_configuration($component, $paymentarea, $itemid, 'stripe');
 $payable = helper::get_payable($component, $paymentarea, $itemid);
 $surcharge = helper::get_gateway_surcharge('stripe');
 

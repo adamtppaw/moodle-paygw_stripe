@@ -192,10 +192,18 @@ class stripe_helper {
      * forks (e.g. enrol_feestripe) alike. Already completed payments are not affected:
      * process.php still delivers what was paid for.
      *
+     * Exception: a hidden course can be bought when the payment account is in subscription mode.
+     * A subscription plan is sold as a hidden "subscription course" whose only job is to give
+     * access to the courses linked to it ("Course meta link"); it is hidden so that it does not
+     * show up in the subscriber's "My courses", profile and course search. Such a course is
+     * bought from a direct link to pay.php placed outside the course. One-time payments for
+     * hidden courses are still refused, so hiding a course still withdraws it from sale.
+     *
      * @param \stdClass $instance The mdl_enrol record (see resolve_enrol_instance()).
+     * @param bool $subscription Whether the payment account of the instance is in subscription mode.
      * @return string|null Language string identifier (paygw_stripe) with the reason, or null when purchase is allowed.
      */
-    public static function get_purchase_unavailable_reason(\stdClass $instance): ?string {
+    public static function get_purchase_unavailable_reason(\stdClass $instance, bool $subscription = false): ?string {
         global $DB;
 
         $course = $DB->get_record('course', ['id' => $instance->courseid], 'id, visible');
@@ -203,7 +211,7 @@ class stripe_helper {
             return 'purchaseunavailable_coursehidden';
         }
         $context = \context_course::instance($course->id);
-        if (!$course->visible && !has_capability('moodle/course:viewhiddencourses', $context)) {
+        if (!$course->visible && !$subscription && !has_capability('moodle/course:viewhiddencourses', $context)) {
             return 'purchaseunavailable_coursehidden';
         }
         if (!enrol_is_enabled($instance->enrol) || (int) $instance->status !== ENROL_INSTANCE_ENABLED) {
