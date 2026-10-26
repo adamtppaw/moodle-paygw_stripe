@@ -40,6 +40,15 @@ $PAGE->set_heading(get_string('subscriptions', 'paygw_stripe'));
 
 if ($subid != null) {
     $subscription = $DB->get_record('paygw_stripe_subscriptions', ['id' => $subid], '*', MUST_EXIST);
+    // Users can manage only their own subscriptions. Without this check any logged-in user could
+    // cancel someone else's subscription (or open their customer portal) by changing the id.
+    if ((int) $subscription->userid !== (int) $USER->id) {
+        throw new moodle_exception('nopermissions', 'error', '', get_string('cancelsubscription', 'paygw_stripe'));
+    }
+    if ($action == 'cancel') {
+        // Cancelling changes data: only from the confirmation form (cancel.php), not from a bare link.
+        require_sesskey();
+    }
     $product = $DB->get_record('paygw_stripe_products', ['productid' => $subscription->productid]);
     $returnurl = new moodle_url('/payment/gateway/stripe/subscriptions.php');
     try {
