@@ -41,14 +41,29 @@ $PAGE->set_heading(get_string('subscriptions', 'paygw_stripe'));
 if ($subid != null) {
     $subscription = $DB->get_record('paygw_stripe_subscriptions', ['id' => $subid], '*', MUST_EXIST);
     $product = $DB->get_record('paygw_stripe_products', ['productid' => $subscription->productid]);
-    $config = (object) helper::get_gateway_configuration($product->component, $product->paymentarea, $product->itemid, 'stripe');
-    $stripehelper = new stripe_helper($config->apikey, $config->secretkey);
+    $returnurl = new moodle_url('/payment/gateway/stripe/subscriptions.php');
+    try {
+        if (!$product) {
+            throw new moodle_exception('subscriptionactionerror', 'paygw_stripe');
+        }
+        $config = (object) helper::get_gateway_configuration($product->component, $product->paymentarea, $product->itemid,
+            'stripe');
+        $stripehelper = new stripe_helper($config->apikey, $config->secretkey);
 
-    if ($action == 'cancel') {
-        $stripehelper->cancel_subscription($subscription);
-        redirect(new moodle_url('/payment/gateway/stripe/subscriptions.php'));
-    } else if ($action == 'portal') {
-        $stripehelper->load_portal($subscription);
+        if ($action == 'cancel') {
+            $message = $stripehelper->cancel_subscription($subscription)
+                ? get_string('subscriptioncancelled', 'paygw_stripe')
+                : get_string('subscriptionalreadycancelled', 'paygw_stripe');
+            redirect($returnurl, $message, null, \core\output\notification::NOTIFY_SUCCESS);
+        } else if ($action == 'portal') {
+            $stripehelper->load_portal($subscription);
+        }
+    } catch (\Stripe\Exception\ApiErrorException | moodle_exception $e) {
+        // Show an understandable message instead of an exception page and log the details.
+        error_log('paygw_stripe: action "' . $action . '" on subscription ' . $subscription->subscriptionid .
+            ' failed: ' . $e->getMessage());
+        redirect($returnurl, get_string('subscriptionactionerror', 'paygw_stripe'), null,
+            \core\output\notification::NOTIFY_ERROR);
     }
 }
 
@@ -73,7 +88,19 @@ $table->data = [];
 
 foreach ($subscriptions as $subscription) {
     $product = $DB->get_record('paygw_stripe_products', ['productid' => $subscription->productid]);
-    $config = (object) helper::get_gateway_configuration($product->component, $product->paymentarea, $product->itemid, 'stripe');
+    if (!$product) {
+        // The product mapping was removed (e.g. archived product); nothing to show or manage.
+        continue;
+    }
+    try {
+        $config = (object) helper::get_gateway_configuration($product->component, $product->paymentarea, $product->itemid,
+            'stripe');
+    } catch (moodle_exception $e) {
+        // The payment account or the enrolment instance no longer exists.
+        error_log('paygw_stripe: no gateway configuration for subscription ' . $subscription->subscriptionid . ': ' .
+            $e->getMessage());
+        continue;
+    }
     $stripehelper = new stripe_helper($config->apikey, $config->secretkey);
     $row = $stripehelper->get_subscription_table_data($subscription);
     if ($row != null) {

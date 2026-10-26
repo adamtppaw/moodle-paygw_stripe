@@ -1389,9 +1389,9 @@ class stripe_helper {
      * @throws \moodle_exception
      */
     public function get_subscription_table_data(\stdClass $moodlesub): ?array {
-        $product = $this->stripe->products->retrieve($moodlesub->productid);
-        $price = $this->stripe->prices->retrieve($moodlesub->priceid);
         try {
+            $product = $this->stripe->products->retrieve($moodlesub->productid);
+            $price = $this->stripe->prices->retrieve($moodlesub->priceid);
             $subscription = $this->stripe->subscriptions->retrieve($moodlesub->subscriptionid, ['expand' => ['schedule']]);
 
             $cancellink =
@@ -1411,6 +1411,9 @@ class stripe_helper {
                     $moodlesub->status != 'canceled' ? \html_writer::link($cancellink, get_string('cancel', 'paygw_stripe')) : '',
             ];
         } catch (ApiErrorException $err) {
+            // Skip the row instead of breaking the whole page, but leave a trace for the admin.
+            error_log('paygw_stripe: cannot load subscription ' . $moodlesub->subscriptionid . ' for the list: ' .
+                    $err->getMessage());
             return null;
         }
     }
@@ -1419,28 +1422,54 @@ class stripe_helper {
      * Cancel a given subscription.
      * Unenrol the user from a course if that was the product chosen.
      *
+     * The current state is read from Stripe first. A subscription that is already cancelled in
+     * Stripe (e.g. in the Dashboard, the customer portal or after failed renewals, while the
+     * webhook did not reach Moodle) or that no longer exists there is not cancelled again: that
+     * call used to throw ("No such subscription") and left Moodle out of sync. In both cases the
+     * Moodle record is set to the Stripe status ("canceled" for a missing subscription) and the
+     * user is unenrolled, so the access matches what the user pays for.
+     *
      * @param \stdClass $moodlesub Moodle subscription record
      * @param bool $cancelstripe Attempt to cancel subscription within Stripe
-     * @return void
-     * @throws ApiErrorException
+     * @return bool True if the subscription was cancelled in Stripe by this call, false if it was
+     *     already cancelled or missing in Stripe (or $cancelstripe is false).
+     * @throws ApiErrorException Other errors than a missing subscription
      * @throws \coding_exception
      * @throws \dml_exception
      */
-    public function cancel_subscription(\stdClass $moodlesub, bool $cancelstripe = true) {
+    public function cancel_subscription(\stdClass $moodlesub, bool $cancelstripe = true): bool {
         global $DB;
 
-        if ($cancelstripe) {
-            $subscription = $this->stripe->subscriptions->cancel($moodlesub->subscriptionid);
-        } else {
+        $subscription = null;
+        try {
             $subscription = $this->stripe->subscriptions->retrieve($moodlesub->subscriptionid);
+        } catch (\Stripe\Exception\InvalidRequestException $e) {
+            if ($e->getStripeCode() !== 'resource_missing') {
+                throw $e;
+            }
+            error_log('paygw_stripe: subscription ' . $moodlesub->subscriptionid .
+                    ' not found in Stripe, marking it as cancelled in Moodle.');
         }
+
+        $cancelled = false;
+        if ($cancelstripe && $subscription && $subscription->status !== 'canceled') {
+            $subscription = $this->stripe->subscriptions->cancel($moodlesub->subscriptionid);
+            $cancelled = true;
+        }
+        $status = $subscription ? $subscription->status : 'canceled';
+
         $datum = $DB->get_record('paygw_stripe_subscriptions', ['subscriptionid' => $moodlesub->subscriptionid]);
-        $datum->status = $subscription->status;
+        $datum->status = $status;
         $DB->update_record('paygw_stripe_subscriptions', $datum);
+
+        if ($status !== 'canceled') {
+            // Stripe did not end the subscription (should not happen after cancel()); keep access.
+            return $cancelled;
+        }
 
         $product = $DB->get_record('paygw_stripe_products', ['productid' => $moodlesub->productid]);
         if (!$product) {
-            return;
+            return $cancelled;
         }
         // A course was the product (any enrolment plugin, e.g. enrol_fee or enrol_feestripe).
         // Unenrol through the instance's own plugin: enrol_plugin::unenrol_user() refuses an
@@ -1453,6 +1482,7 @@ class stripe_helper {
             debugging('paygw_stripe: enrol instance ' . $product->itemid . ' (' . $product->component .
                     ') not found, user ' . $moodlesub->userid . ' was not unenrolled.', DEBUG_DEVELOPER);
         }
+        return $cancelled;
     }
 
     /**

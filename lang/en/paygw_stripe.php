@@ -83,6 +83,9 @@ $string['scheduledrenewal'] = 'Scheduled Renewal';
 $string['status'] = 'Status';
 $string['updatepaymentmethod'] = 'Update Payment Method';
 $string['cancel'] = 'Cancel';
+$string['subscriptionactionerror'] = 'The subscription could not be changed right now. Please try again later or contact the site administrator.';
+$string['subscriptionalreadycancelled'] = 'This subscription had already been cancelled. Its status has been updated.';
+$string['subscriptioncancelled'] = 'The subscription has been cancelled.';
 $string['subscriptionssubheading'] =
     'This page lists the subscriptions you have purchased. You can cancel subscriptions here, cancellations will be processed immediately and you will not be able to enter the course again.';
 

@@ -86,6 +86,9 @@ $string['scheduledrenewal'] = 'Planowane odnowienie';
 $string['status'] = 'Status';
 $string['updatepaymentmethod'] = 'Zmień metodę płatności';
 $string['cancel'] = 'Anuluj';
+$string['subscriptionactionerror'] = 'Nie udało się teraz zmienić subskrypcji. Spróbuj ponownie później albo skontaktuj się z administratorem serwisu.';
+$string['subscriptionalreadycancelled'] = 'Ta subskrypcja była już anulowana. Jej status został zaktualizowany.';
+$string['subscriptioncancelled'] = 'Subskrypcja została anulowana.';
 $string['subscriptionssubheading'] = 'Na tej stronie znajdziesz wykupione subskrypcje. Możesz je tutaj anulować – anulowanie działa natychmiast i nie będzie już można wejść do kursu.';
 
 $string['customsubscriptioninterval:day'] = 'Dzień';
