@@ -33,9 +33,10 @@ $itemid = optional_param('itemid', null, PARAM_INT);
 
 $url = new moodle_url('/');
 
-// Return to the course for any enrolment plugin (enrol_fee, enrol_feestripe, ...).
-if ($component && $instance = \paygw_stripe\stripe_helper::resolve_enrol_instance($component, $itemid)) {
-    $url = course_get_url($instance->courseid);
+// Return to the course for any enrolment plugin (enrol_fee, enrol_feestripe, ...),
+// or to the site home page when the user cannot see the course (hidden subscription course).
+if ($component && $paymentarea && $itemid) {
+    $url = \paygw_stripe\stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id, false);
 }
 
 redirect($url, get_string('paymentcancelled', 'paygw_stripe'));

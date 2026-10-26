@@ -49,8 +49,8 @@ if ($sessionmode === 'subscription') {
     if (!in_array($subscriptionstatus, ['incomplete', 'incomplete_expired', 'canceled'])) {
         $stripehelper->deliver_course($component, $paymentarea, $itemid, $USER->id);
 
-        // Find redirection.
-        $url = helper::get_success_url($component, $paymentarea, $itemid);
+        // Find redirection ("My courses" when the course is hidden, e.g. a subscription course).
+        $url = stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id);
         redirect($url, get_string('subscriptionsuccessful', 'paygw_stripe'), 0, 'success');
     } else {
         redirect(new moodle_url('/'), get_string('subscriptionerror', 'paygw_stripe'));
@@ -60,7 +60,7 @@ if ($sessionmode === 'subscription') {
         $stripehelper->deliver_course($component, $paymentarea, $itemid, $USER->id);
 
         // Find redirection.
-        $url = helper::get_success_url($component, $paymentarea, $itemid);
+        $url = stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id);
         redirect($url, get_string('paymentsuccessful', 'paygw_stripe'), 0, 'success');
     } else if ($stripehelper->is_pending($sessionid)) {
         redirect(new moodle_url('/'), get_string('paymentpending', 'paygw_stripe'));

@@ -228,6 +228,43 @@ class stripe_helper {
     }
 
     /**
+     * Where to send the user after a payment (or a cancelled Checkout) for a payment item.
+     *
+     * Normally this is the course page (core_payment's success URL after a payment, the course
+     * after a cancelled Checkout). A hidden course cannot be opened by a user without the
+     * "moodle/course:viewhiddencourses" capability (Moodle shows a "coursehidden" error), which
+     * is the case for a hidden subscription course: the user is sent to "My courses" after a
+     * payment (the courses of the plan are listed there) and to the site home page after a
+     * cancelled Checkout.
+     *
+     * @param string $component
+     * @param string $paymentarea
+     * @param int $itemid
+     * @param int $userid User who pays (the capability is checked for this user, not $USER,
+     *     because the method is also called from the webhook).
+     * @param bool $success true after a payment, false after a cancelled Checkout.
+     * @return moodle_url
+     */
+    public static function get_return_url(string $component, string $paymentarea, int $itemid, int $userid,
+            bool $success = true): moodle_url {
+        global $DB;
+
+        $instance = self::resolve_enrol_instance($component, $itemid);
+        if ($instance) {
+            $visible = $DB->get_field('course', 'visible', ['id' => $instance->courseid]);
+            $canview = $visible !== false && ((int) $visible === 1 || has_capability('moodle/course:viewhiddencourses',
+                    \context_course::instance($instance->courseid), $userid));
+            if (!$canview) {
+                return new moodle_url($success ? '/my/courses.php' : '/');
+            }
+        }
+        if ($success) {
+            return helper::get_success_url($component, $paymentarea, $itemid);
+        }
+        return $instance ? new moodle_url('/course/view.php', ['id' => $instance->courseid]) : new moodle_url('/');
+    }
+
+    /**
      * Build the name of the Stripe product (and the payment description) for a payment item.
      *
      * The name is built on the server and never taken from the request: the description
@@ -1152,7 +1189,8 @@ class stripe_helper {
                 $this->deliver_course($metadata['component'], $metadata['paymentarea'], $metadata['itemid'], $intentrecord->userid);
 
                 // Notify user payment was successful.
-                $url = helper::get_success_url($metadata['component'], $metadata['paymentarea'], $metadata['itemid']);
+                $url = self::get_return_url($metadata['component'], $metadata['paymentarea'], $metadata['itemid'],
+                        $intentrecord->userid);
                 $this->notify_user($intentrecord->userid, 'successful', ['url' => $url->out()]);
                 break;
             case 'checkout.session.async_payment_failed':
