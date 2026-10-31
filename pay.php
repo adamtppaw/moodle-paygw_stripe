@@ -61,7 +61,9 @@ if ($instance = stripe_helper::resolve_enrol_instance($component, $itemid)) {
         } else if ($reason === 'purchaseunavailable_alreadyenrolled') {
             $returnurl = stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id);
         } else {
-            $returnurl = new moodle_url('/course/view.php', ['id' => $instance->courseid]);
+            // The course page, or the home page when the user cannot open the course (e.g. a hidden
+            // subscription course withdrawn from sale) instead of Moodle's "course hidden" error.
+            $returnurl = stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id, false);
         }
         redirect($returnurl, get_string($reason, 'paygw_stripe'), null, \core\output\notification::NOTIFY_WARNING);
     }
