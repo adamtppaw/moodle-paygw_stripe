@@ -40,6 +40,18 @@ $config = (object) helper::get_gateway_configuration($component, $paymentarea, $
 
 $stripehelper = new stripe_helper($config->apikey, $config->secretkey);
 
+// The session ID comes from the request: accept it only for the buyer and the item it was created
+// for (see stripe_helper::session_matches()). An unknown session ID is refused the same way.
+try {
+    $sessionmatches = $stripehelper->session_matches($sessionid, (int) $USER->id, $component, $paymentarea, $itemid);
+} catch (\Stripe\Exception\ApiErrorException $e) {
+    $sessionmatches = false;
+}
+if (!$sessionmatches) {
+    redirect(new moodle_url('/'), get_string('sessionmismatch', 'paygw_stripe'), null,
+        \core\output\notification::NOTIFY_ERROR);
+}
+
 $stripehelper->save_payment_status($sessionid);
 
 $sessionmode = $stripehelper->get_sessionmode($sessionid);

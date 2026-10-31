@@ -1007,6 +1007,40 @@ class stripe_helper {
     }
 
     /**
+     * Whether a Checkout Session belongs to the given buyer and payment item.
+     *
+     * process.php takes the session ID, the item and the buyer (the logged-in user) from the request.
+     * Without this check a paid session of a cheap course, or the session ID of another user, opened
+     * with a different itemid in the address would enrol the current user in that item and record a
+     * payment for it. The plugin stores the buyer and the item in the session metadata
+     * (build_payment_metadata()), so a session is accepted only when both match and the session was
+     * created by this site.
+     *
+     * @param string $sessionid Stripe session ID
+     * @param int $userid Logged-in user
+     * @param string $component
+     * @param string $paymentarea
+     * @param int $itemid
+     * @return bool
+     * @throws ApiErrorException
+     */
+    public function session_matches(string $sessionid, int $userid, string $component, string $paymentarea,
+            int $itemid): bool {
+        global $CFG;
+
+        $metadata = $this->stripe->checkout->sessions->retrieve($sessionid)->metadata;
+        if (!isset($metadata['userid'], $metadata['component'], $metadata['paymentarea'], $metadata['itemid'])) {
+            return false;
+        }
+        $site = $metadata['moodle_site'] ?? $CFG->wwwroot;
+        return (int) $metadata['userid'] === $userid
+                && $metadata['component'] === $component
+                && $metadata['paymentarea'] === $paymentarea
+                && (int) $metadata['itemid'] === $itemid
+                && $site === $CFG->wwwroot;
+    }
+
+    /**
      * Convert the cost into the unit amount accounting for zero-decimal currencies.
      *
      * The result is rounded to a whole number of minor units. Multiplying a float by 100 is not exact

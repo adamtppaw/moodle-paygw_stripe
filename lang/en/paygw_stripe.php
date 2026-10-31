@@ -159,3 +159,4 @@ $string['purchaseunavailable_coursehidden'] = 'This course is no longer availabl
 $string['purchaseunavailable_enroldisabled'] = 'Enrolment in this course is closed, so it cannot be purchased.';
 $string['purchaseunavailable_ended'] = 'Enrolment in this course has ended, so it can no longer be purchased.';
 $string['purchaseunavailable_notstarted'] = 'Enrolment in this course has not started yet, so it cannot be purchased now.';
+$string['sessionmismatch'] = 'This payment does not belong to this purchase or to this account, so no access was granted. If you have been charged, please contact the site administrator.';
