@@ -1400,15 +1400,34 @@ class stripe_helper {
                     new moodle_url('/payment/gateway/stripe/subscriptions.php',
                             ['action' => 'portal', 'subscriptionid' => $moodlesub->id]);
 
+            $fee = $this->get_localised_cost($price->unit_amount, $price->currency) . ' / ' .
+                    get_string('customsubscriptioninterval:' . $price->recurring->interval, 'paygw_stripe');
+
+            // Cancelled at the end of the paid period: still active, but will not renew. Show when
+            // access ends and offer to resume instead of cancelling again.
+            if ($subscription->status !== 'canceled' && !empty($subscription->cancel_at_period_end)) {
+                $resumelink = new moodle_url('/payment/gateway/stripe/subscriptions.php',
+                        ['action' => 'resume', 'subscriptionid' => $moodlesub->id, 'sesskey' => sesskey()]);
+                return [
+                        $product->name,
+                        $fee,
+                        '–',
+                        get_string('subscriptionendson', 'paygw_stripe',
+                                self::format_subscription_date($subscription->current_period_end)),
+                        '',
+                        \html_writer::link($resumelink, get_string('resumesubscription', 'paygw_stripe')),
+                ];
+            }
+
             return [
                     $product->name,
-                    $this->get_localised_cost($price->unit_amount, $price->currency) . ' / ' .
-                    get_string('customsubscriptioninterval:' . $price->recurring->interval, 'paygw_stripe'),
-                    userdate($subscription->current_period_end),
-                    get_string('subscriptionstatus:' . $moodlesub->status, 'paygw_stripe'),
-                    $moodlesub->status != 'canceled' ?
+                    $fee,
+                    $subscription->status !== 'canceled' ? userdate($subscription->current_period_end) : '–',
+                    get_string('subscriptionstatus:' . $subscription->status, 'paygw_stripe'),
+                    $subscription->status != 'canceled' ?
                             \html_writer::link($portallink, get_string('updatepaymentmethod', 'paygw_stripe')) : '',
-                    $moodlesub->status != 'canceled' ? \html_writer::link($cancellink, get_string('cancel', 'paygw_stripe')) : '',
+                    $subscription->status != 'canceled' ?
+                            \html_writer::link($cancellink, get_string('cancel', 'paygw_stripe')) : '',
             ];
         } catch (ApiErrorException $err) {
             // Skip the row instead of breaking the whole page, but leave a trace for the admin.
@@ -1440,16 +1459,7 @@ class stripe_helper {
     public function cancel_subscription(\stdClass $moodlesub, bool $cancelstripe = true): bool {
         global $DB;
 
-        $subscription = null;
-        try {
-            $subscription = $this->stripe->subscriptions->retrieve($moodlesub->subscriptionid);
-        } catch (\Stripe\Exception\InvalidRequestException $e) {
-            if ($e->getStripeCode() !== 'resource_missing') {
-                throw $e;
-            }
-            error_log('paygw_stripe: subscription ' . $moodlesub->subscriptionid .
-                    ' not found in Stripe, marking it as cancelled in Moodle.');
-        }
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
 
         $cancelled = false;
         if ($cancelstripe && $subscription && $subscription->status !== 'canceled') {
@@ -1483,6 +1493,122 @@ class stripe_helper {
                     ') not found, user ' . $moodlesub->userid . ' was not unenrolled.', DEBUG_DEVELOPER);
         }
         return $cancelled;
+    }
+
+    /**
+     * Retrieve a subscription from Stripe, or null when it no longer exists there.
+     *
+     * @param string $subscriptionid Stripe subscription ID
+     * @return \Stripe\Subscription|null
+     * @throws ApiErrorException Other errors than a missing subscription
+     */
+    private function retrieve_subscription_or_null(string $subscriptionid): ?\Stripe\Subscription {
+        try {
+            return $this->stripe->subscriptions->retrieve($subscriptionid);
+        } catch (\Stripe\Exception\InvalidRequestException $e) {
+            if ($e->getStripeCode() !== 'resource_missing') {
+                throw $e;
+            }
+            error_log('paygw_stripe: subscription ' . $subscriptionid . ' not found in Stripe.');
+            return null;
+        }
+    }
+
+    /**
+     * Store the current Stripe status of a subscription in Moodle.
+     *
+     * @param \stdClass $moodlesub Moodle subscription record
+     * @param string $status Stripe subscription status
+     * @return void
+     */
+    private function save_subscription_status(\stdClass $moodlesub, string $status) {
+        global $DB;
+        $DB->set_field('paygw_stripe_subscriptions', 'status', $status, ['subscriptionid' => $moodlesub->subscriptionid]);
+    }
+
+    /**
+     * Cancel a subscription at the end of the current, already paid billing period.
+     *
+     * This is what the user does on "My subscriptions". Stripe keeps the subscription active until
+     * the end of the period (cancel_at_period_end = true) and does not charge the card again. When
+     * the period ends, Stripe cancels the subscription and sends customer.subscription.deleted;
+     * the webhook then unenrols the user (cancel_subscription() with $cancelstripe = false). Until
+     * then the user keeps access and can resume the subscription (resume_subscription()).
+     *
+     * A subscription that is not being paid for (incomplete, unpaid) has no paid period to keep,
+     * so it is cancelled immediately. A subscription that is already cancelled or missing in
+     * Stripe is only synced (see cancel_subscription()).
+     *
+     * @param \stdClass $moodlesub Moodle subscription record
+     * @return array{0: string, 1: int|null} Outcome ('scheduled', 'cancelled' or 'alreadyended') and,
+     *     for 'scheduled', the timestamp when access ends.
+     * @throws ApiErrorException
+     * @throws \coding_exception
+     * @throws \dml_exception
+     */
+    public function schedule_cancellation(\stdClass $moodlesub): array {
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
+        if (!$subscription || in_array($subscription->status, ['canceled', 'incomplete_expired'])) {
+            $this->cancel_subscription($moodlesub, false);
+            return ['alreadyended', null];
+        }
+        if (in_array($subscription->status, ['incomplete', 'unpaid'])) {
+            $this->cancel_subscription($moodlesub);
+            return ['cancelled', null];
+        }
+        if (empty($subscription->cancel_at_period_end)) {
+            $subscription = $this->stripe->subscriptions->update($moodlesub->subscriptionid, ['cancel_at_period_end' => true]);
+        }
+        $this->save_subscription_status($moodlesub, $subscription->status);
+        return ['scheduled', (int) $subscription->current_period_end];
+    }
+
+    /**
+     * Undo a cancellation scheduled for the end of the billing period.
+     *
+     * Possible only until the period ends; a subscription that has already ended cannot be
+     * resumed (a new purchase is needed).
+     *
+     * @param \stdClass $moodlesub Moodle subscription record
+     * @return int|null Timestamp of the next renewal, or null when the subscription cannot be resumed.
+     * @throws ApiErrorException
+     */
+    public function resume_subscription(\stdClass $moodlesub): ?int {
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
+        if (!$subscription || in_array($subscription->status, ['canceled', 'incomplete_expired', 'incomplete', 'unpaid'])) {
+            return null;
+        }
+        if (!empty($subscription->cancel_at_period_end)) {
+            $subscription = $this->stripe->subscriptions->update($moodlesub->subscriptionid, ['cancel_at_period_end' => false]);
+        }
+        $this->save_subscription_status($moodlesub, $subscription->status);
+        return (int) $subscription->current_period_end;
+    }
+
+    /**
+     * Read the end of the current billing period, i.e. until when a cancelled subscription keeps access.
+     *
+     * @param \stdClass $moodlesub Moodle subscription record
+     * @return int|null Timestamp of the end of the current period; null when the subscription has
+     *     no paid period to keep (already ended, missing, incomplete or unpaid).
+     * @throws ApiErrorException
+     */
+    public function get_current_period_end(\stdClass $moodlesub): ?int {
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
+        if (!$subscription || in_array($subscription->status, ['canceled', 'incomplete_expired', 'incomplete', 'unpaid'])) {
+            return null;
+        }
+        return (int) $subscription->current_period_end;
+    }
+
+    /**
+     * Format a date for subscription messages (day, month and year in the user's language).
+     *
+     * @param int $timestamp
+     * @return string
+     */
+    public static function format_subscription_date(int $timestamp): string {
+        return userdate($timestamp, get_string('strftimedate', 'langconfig'));
     }
 
     /**

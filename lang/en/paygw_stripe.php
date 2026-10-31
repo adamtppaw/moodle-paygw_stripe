@@ -86,8 +86,14 @@ $string['cancel'] = 'Cancel';
 $string['subscriptionactionerror'] = 'The subscription could not be changed right now. Please try again later or contact the site administrator.';
 $string['subscriptionalreadycancelled'] = 'This subscription had already been cancelled. Its status has been updated.';
 $string['subscriptioncancelled'] = 'The subscription has been cancelled.';
+$string['cancelsubscriptionconfirmuntil'] = 'Are you sure you wish to cancel this subscription? It will end on {$a}. Until then you keep access to the courses and can resume the subscription on the subscriptions page.';
+$string['resumesubscription'] = 'Resume';
+$string['subscriptioncancelscheduled'] = 'The subscription will end on {$a}. Until then you keep access to the courses and can resume it on this page.';
+$string['subscriptionendson'] = 'Cancelled – active until {$a}';
+$string['subscriptionnotresumable'] = 'This subscription has already ended and cannot be resumed.';
+$string['subscriptionresumed'] = 'The subscription has been resumed and will renew on {$a}.';
 $string['subscriptionssubheading'] =
-    'This page lists the subscriptions you have purchased. You can cancel subscriptions here, cancellations will be processed immediately and you will not be able to enter the course again.';
+    'This page lists the subscriptions you have purchased. You can cancel them here – a cancelled subscription stays active until the end of the paid period, and you keep access to the courses until then.';
 
 $string['customsubscriptioninterval:day'] = 'Day';
 $string['customsubscriptioninterval:week'] = 'Week';

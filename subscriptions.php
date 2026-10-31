@@ -45,8 +45,9 @@ if ($subid != null) {
     if ((int) $subscription->userid !== (int) $USER->id) {
         throw new moodle_exception('nopermissions', 'error', '', get_string('cancelsubscription', 'paygw_stripe'));
     }
-    if ($action == 'cancel') {
-        // Cancelling changes data: only from the confirmation form (cancel.php), not from a bare link.
+    if ($action == 'cancel' || $action == 'resume') {
+        // These change data: cancelling only from the confirmation form (cancel.php), resuming
+        // from the link on this page; never from a bare link without sesskey.
         require_sesskey();
     }
     $product = $DB->get_record('paygw_stripe_products', ['productid' => $subscription->productid]);
@@ -60,10 +61,25 @@ if ($subid != null) {
         $stripehelper = new stripe_helper($config->apikey, $config->secretkey);
 
         if ($action == 'cancel') {
-            $message = $stripehelper->cancel_subscription($subscription)
-                ? get_string('subscriptioncancelled', 'paygw_stripe')
-                : get_string('subscriptionalreadycancelled', 'paygw_stripe');
+            // Cancel at the end of the paid period: access stays until then (see schedule_cancellation()).
+            [$outcome, $endsat] = $stripehelper->schedule_cancellation($subscription);
+            if ($outcome === 'scheduled') {
+                $message = get_string('subscriptioncancelscheduled', 'paygw_stripe',
+                    stripe_helper::format_subscription_date($endsat));
+            } else if ($outcome === 'cancelled') {
+                $message = get_string('subscriptioncancelled', 'paygw_stripe');
+            } else {
+                $message = get_string('subscriptionalreadycancelled', 'paygw_stripe');
+            }
             redirect($returnurl, $message, null, \core\output\notification::NOTIFY_SUCCESS);
+        } else if ($action == 'resume') {
+            $renewsat = $stripehelper->resume_subscription($subscription);
+            if ($renewsat) {
+                redirect($returnurl, get_string('subscriptionresumed', 'paygw_stripe',
+                    stripe_helper::format_subscription_date($renewsat)), null, \core\output\notification::NOTIFY_SUCCESS);
+            }
+            redirect($returnurl, get_string('subscriptionnotresumable', 'paygw_stripe'), null,
+                \core\output\notification::NOTIFY_WARNING);
         } else if ($action == 'portal') {
             $stripehelper->load_portal($subscription);
         }

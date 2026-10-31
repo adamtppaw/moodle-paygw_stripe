@@ -89,7 +89,13 @@ $string['cancel'] = 'Anuluj';
 $string['subscriptionactionerror'] = 'Nie udało się teraz zmienić subskrypcji. Spróbuj ponownie później albo skontaktuj się z administratorem serwisu.';
 $string['subscriptionalreadycancelled'] = 'Ta subskrypcja była już anulowana. Jej status został zaktualizowany.';
 $string['subscriptioncancelled'] = 'Subskrypcja została anulowana.';
-$string['subscriptionssubheading'] = 'Na tej stronie znajdziesz wykupione subskrypcje. Możesz je tutaj anulować – anulowanie działa natychmiast i nie będzie już można wejść do kursu.';
+$string['cancelsubscriptionconfirmuntil'] = 'Czy na pewno chcesz anulować tę subskrypcję? Zakończy się {$a}. Do tego dnia masz dostęp do kursów i możesz wznowić subskrypcję na stronie subskrypcji.';
+$string['resumesubscription'] = 'Wznów';
+$string['subscriptioncancelscheduled'] = 'Subskrypcja zakończy się {$a}. Do tego dnia masz dostęp do kursów i możesz ją wznowić na tej stronie.';
+$string['subscriptionendson'] = 'Anulowana – aktywna do {$a}';
+$string['subscriptionnotresumable'] = 'Ta subskrypcja już się zakończyła i nie można jej wznowić.';
+$string['subscriptionresumed'] = 'Subskrypcja została wznowiona i odnowi się {$a}.';
+$string['subscriptionssubheading'] = 'Na tej stronie znajdziesz wykupione subskrypcje. Możesz je tutaj anulować – anulowana subskrypcja działa do końca opłaconego okresu i do tego dnia masz dostęp do kursów.';
 
 $string['customsubscriptioninterval:day'] = 'Dzień';
 $string['customsubscriptioninterval:week'] = 'Tydzień';
