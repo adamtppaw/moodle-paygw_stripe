@@ -78,3 +78,7 @@ if ($sessionmode === 'subscription') {
         redirect(new moodle_url('/'), get_string('paymentpending', 'paygw_stripe'));
     }
 }
+
+// Neither paid nor pending (e.g. the session was left unpaid): say so instead of showing an empty page.
+$url = stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id, false);
+redirect($url, get_string('paymentnotcompleted', 'paygw_stripe'), null, \core\output\notification::NOTIFY_WARNING);

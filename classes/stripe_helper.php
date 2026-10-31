@@ -1034,7 +1034,8 @@ class stripe_helper {
      */
     public function is_paid(string $sessionid): bool {
         $session = $this->stripe->checkout->sessions->retrieve($sessionid);
-        return $session->payment_status === 'paid';
+        // no_payment_required: nothing was due (e.g. a 100% promotion code); the purchase is complete.
+        return in_array($session->payment_status, ['paid', 'no_payment_required'], true);
     }
 
     /**
@@ -1047,7 +1048,8 @@ class stripe_helper {
     public function is_pending(string $sessionid): bool {
         // Check payment intent here as the session status is a simple pass/fail that doesn't include processing.
         $session = $this->stripe->checkout->sessions->retrieve($sessionid, ['expand' => ['payment_intent']]);
-        return $session->payment_intent->status === 'processing';
+        // A session without a payment intent (nothing to pay, or not paid at all) is never pending.
+        return $session->payment_intent !== null && $session->payment_intent->status === 'processing';
     }
 
     /**

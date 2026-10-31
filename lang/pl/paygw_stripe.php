@@ -161,4 +161,5 @@ $string['purchaseunavailable_coursehidden'] = 'Ten kurs nie jest już dostępny 
 $string['purchaseunavailable_enroldisabled'] = 'Zapisy na ten kurs są zamknięte, więc nie można go kupić.';
 $string['purchaseunavailable_ended'] = 'Zapisy na ten kurs już się zakończyły, więc nie można go kupić.';
 $string['purchaseunavailable_notstarted'] = 'Zapisy na ten kurs jeszcze się nie rozpoczęły, więc nie można go teraz kupić.';
+$string['paymentnotcompleted'] = 'Płatność nie została zakończona, więc dostęp nie został przyznany. Możesz spróbować ponownie.';
 $string['sessionmismatch'] = 'Ta płatność nie dotyczy tego zakupu albo tego konta, więc dostęp nie został przyznany. Jeśli płatność została pobrana, skontaktuj się z administratorem serwisu.';
