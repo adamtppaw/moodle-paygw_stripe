@@ -639,7 +639,14 @@ class stripe_helper {
             return null;
         }
         try {
-            return $this->stripe->customers->retrieve($record->customerid);
+            $customer = $this->stripe->customers->retrieve($record->customerid);
+            // A customer deleted in Stripe is still returned (with deleted = true, no exception) but cannot
+            // be used in a Checkout Session: forget it, so a new customer is created.
+            if (!empty($customer->deleted)) {
+                $DB->delete_records('paygw_stripe_customers', ['userid' => $userid]);
+                return null;
+            }
+            return $customer;
         } catch (ApiErrorException $e) {
             // Customer exists in Moodle but not in stripe, possibly the keys were switched.
             // Delete customer for creation later.
