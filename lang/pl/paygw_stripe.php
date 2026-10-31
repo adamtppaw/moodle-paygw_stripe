@@ -156,6 +156,7 @@ $string['privacy:metadata:stripe_subscriptions:userid'] = 'ID użytkownika Moodl
 
 $string['stripeinvoices'] = 'Faktury i potwierdzenia płatności Stripe';
 $string['purchaseunavailable_alreadyenrolled'] = 'Masz już aktywny dostęp, więc nie trzeba za niego ponownie płacić.';
+$string['purchaseunavailable_alreadysubscribed'] = 'Masz już subskrypcję, więc nie trzeba kupować kolejnej. Poniżej sprawdzisz jej stan, a jeśli została anulowana, możesz ją wznowić do końca opłaconego okresu.';
 $string['purchaseunavailable_coursehidden'] = 'Ten kurs nie jest już dostępny w sprzedaży.';
 $string['purchaseunavailable_enroldisabled'] = 'Zapisy na ten kurs są zamknięte, więc nie można go kupić.';
 $string['purchaseunavailable_ended'] = 'Zapisy na ten kurs już się zakończyły, więc nie można go kupić.';

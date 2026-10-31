@@ -266,6 +266,63 @@ class stripe_helper {
     }
 
     /**
+     * A subscription of the user that is still running, if any; it blocks buying another subscription.
+     *
+     * Subscription plans give access to whole groups of courses, so a second plan (or the same plan
+     * again) would only charge the user twice for the same access. The Moodle site is expected to show
+     * plan links only to users without a subscription; this is the second line of defence for a direct
+     * link to pay.php.
+     *
+     * Running means any status other than canceled, incomplete and incomplete_expired: active,
+     * trialing, past_due (Stripe is still retrying the payment), unpaid and paused. A subscription
+     * cancelled at the end of the period is still active until then and can be resumed instead.
+     * The stored status can be out of date (e.g. a webhook that did not reach Moodle), so each
+     * candidate is checked in Stripe first. A subscription that has ended there is synchronised
+     * (status and unenrolment, see cancel_subscription()) and does not block. When Stripe cannot be
+     * reached, the stored status is trusted.
+     *
+     * @param int $userid
+     * @return \stdClass|null Record of paygw_stripe_subscriptions, or null when nothing blocks the purchase.
+     */
+    public static function get_running_subscription(int $userid): ?\stdClass {
+        global $DB;
+
+        [$notin, $params] = $DB->get_in_or_equal(['canceled', 'incomplete', 'incomplete_expired'], SQL_PARAMS_NAMED,
+                'st', false);
+        $params['userid'] = $userid;
+        $candidates = $DB->get_records_select('paygw_stripe_subscriptions',
+                "userid = :userid AND (status IS NULL OR status $notin)", $params, 'id DESC');
+        foreach ($candidates as $moodlesub) {
+            $item = self::get_subscription_item($moodlesub);
+            if (!$item) {
+                return $moodlesub;
+            }
+            try {
+                $config = (object) helper::get_gateway_configuration($item->component, $item->paymentarea, $item->itemid,
+                        'stripe');
+                $stripehelper = new self($config->apikey, $config->secretkey);
+                $subscription = $stripehelper->retrieve_subscription_or_null($moodlesub->subscriptionid);
+                if ($subscription && !in_array($subscription->status, ['canceled', 'incomplete_expired'])) {
+                    if ($subscription->status !== $moodlesub->status) {
+                        $stripehelper->save_subscription_status($moodlesub, $subscription->status);
+                    }
+                    if ($subscription->status !== 'incomplete') {
+                        return $moodlesub;
+                    }
+                    continue;
+                }
+                // Ended (or deleted) in Stripe while Moodle still had it as running: catch up now.
+                $stripehelper->cancel_subscription($moodlesub, false);
+            } catch (ApiErrorException | \moodle_exception $e) {
+                error_log('paygw_stripe: cannot check subscription ' . $moodlesub->subscriptionid . ' before a purchase: ' .
+                        $e->getMessage());
+                return $moodlesub;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Where to send the user after a payment (or a cancelled Checkout) for a payment item.
      *
      * Normally this is the course page (core_payment's success URL after a payment, the course
