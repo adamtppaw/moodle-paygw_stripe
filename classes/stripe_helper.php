@@ -1103,9 +1103,39 @@ class stripe_helper {
         $datum->status = $subscription->status;
         $datum->productid = $session->line_items->first()->price->product;
         $datum->priceid = $session->line_items->first()->price->id;
+        // The item the subscription was bought for, independent of the product mapping (see get_subscription_item()).
+        $datum->component = $session->metadata['component'] ?? null;
+        $datum->paymentarea = $session->metadata['paymentarea'] ?? null;
+        $datum->itemid = isset($session->metadata['itemid']) ? (int) $session->metadata['itemid'] : null;
 
         $DB->insert_record('paygw_stripe_subscriptions', $datum);
         return $subscription;
+    }
+
+    /**
+     * The payment item (e.g. an enrol instance of a subscription course) a Moodle subscription was bought for.
+     *
+     * Read from the subscription record itself. Older records (saved before the item was stored with
+     * the subscription) fall back to the product mapping. The mapping alone is not reliable: get_product()
+     * removes it when the product is archived in Stripe, and the next purchase maps the item to a new
+     * product, so existing subscriptions of the plan would lose their item (no list row, no cancelling,
+     * no unenrolment when they end).
+     *
+     * @param \stdClass $moodlesub Record of paygw_stripe_subscriptions
+     * @return \stdClass|null Object with component, paymentarea and itemid, or null when unknown.
+     */
+    public static function get_subscription_item(\stdClass $moodlesub): ?\stdClass {
+        global $DB;
+
+        if (!empty($moodlesub->component) && !empty($moodlesub->paymentarea) && !empty($moodlesub->itemid)) {
+            return (object) ['component' => $moodlesub->component, 'paymentarea' => $moodlesub->paymentarea,
+                    'itemid' => (int) $moodlesub->itemid];
+        }
+        $products = $DB->get_records('paygw_stripe_products', ['productid' => $moodlesub->productid], 'id DESC',
+                'id, component, paymentarea, itemid', 0, 1);
+        $product = reset($products);
+        return $product ? (object) ['component' => $product->component, 'paymentarea' => $product->paymentarea,
+                'itemid' => (int) $product->itemid] : null;
     }
 
     /**
@@ -1511,8 +1541,10 @@ class stripe_helper {
             return $cancelled;
         }
 
-        $product = $DB->get_record('paygw_stripe_products', ['productid' => $moodlesub->productid]);
+        $product = self::get_subscription_item($datum);
         if (!$product) {
+            debugging('paygw_stripe: no payment item for subscription ' . $moodlesub->subscriptionid . ', user ' .
+                    $moodlesub->userid . ' was not unenrolled.', DEBUG_DEVELOPER);
             return $cancelled;
         }
         // A course was the product (any enrolment plugin, e.g. enrol_fee or enrol_feestripe).

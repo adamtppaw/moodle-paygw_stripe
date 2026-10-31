@@ -50,7 +50,7 @@ if ($subid != null) {
         // from the link on this page; never from a bare link without sesskey.
         require_sesskey();
     }
-    $product = $DB->get_record('paygw_stripe_products', ['productid' => $subscription->productid]);
+    $product = stripe_helper::get_subscription_item($subscription);
     $returnurl = new moodle_url('/payment/gateway/stripe/subscriptions.php');
     try {
         if (!$product) {
@@ -112,9 +112,10 @@ $subscriptions = $DB->get_records('paygw_stripe_subscriptions', ['userid' => $US
 $table->data = [];
 
 foreach ($subscriptions as $subscription) {
-    $product = $DB->get_record('paygw_stripe_products', ['productid' => $subscription->productid]);
+    $product = stripe_helper::get_subscription_item($subscription);
     if (!$product) {
-        // The product mapping was removed (e.g. archived product); nothing to show or manage.
+        // Old record whose product mapping was removed (e.g. archived product); nothing to show or manage.
+        error_log('paygw_stripe: no payment item for subscription ' . $subscription->subscriptionid);
         continue;
     }
     try {

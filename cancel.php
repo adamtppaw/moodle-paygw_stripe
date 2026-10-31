@@ -45,7 +45,7 @@ if ((int) $subscription->userid !== (int) $USER->id) {
 // Tell the user until when they keep access: cancelling ends the subscription at the end of the
 // paid period. If Stripe cannot be reached, fall back to the generic question.
 $message = get_string('cancelsubscriptionconfirm', 'paygw_stripe');
-if ($product = $DB->get_record('paygw_stripe_products', ['productid' => $subscription->productid])) {
+if ($product = stripe_helper::get_subscription_item($subscription)) {
     try {
         $config = (object) helper::get_gateway_configuration($product->component, $product->paymentarea, $product->itemid,
             'stripe');
