@@ -118,6 +118,8 @@ $string['subscriptionstatus:incomplete'] = 'Niekompletna';
 $string['subscriptionstatus:incomplete_expired'] = 'Wygasła';
 $string['subscriptionstatus:trialing'] = 'Okres próbny';
 $string['subscriptionstatus:paused'] = 'Wstrzymana';
+$string['task_reconcilesubscriptions'] = 'Uzgadnianie statusów subskrypcji ze Stripe';
+$string['task_reconcilesubscriptions_incomplete'] = 'Nie udało się sprawdzić w Stripe {$a} subskrypcji – szczegóły w logu zadania.';
 
 $string['payment:successful:subject'] = 'Płatność zakończona powodzeniem';
 $string['payment:successful:message'] = 'Twoja płatność została zaksięgowana. Możesz teraz przejść do: {$a->url}';

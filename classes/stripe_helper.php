@@ -1649,6 +1649,44 @@ class stripe_helper {
     }
 
     /**
+     * Compare one subscription record with Stripe and catch up on a change that Moodle missed.
+     *
+     * Used by the daily reconcile_subscriptions task as a safety net for lost webhooks: access to
+     * the courses of a plan is removed only on customer.subscription.deleted, so a webhook that never
+     * arrives (Moodle down for longer than Stripe retries, rolled secret, disabled endpoint) would
+     * otherwise leave access without payment.
+     *
+     * - Ended in Stripe (canceled): the same handling as the webhook - status and unenrolment.
+     * - Any other status that differs from the stored one: only the status is stored. Access never
+     *   depends on it (past_due keeps access while Stripe retries the payment).
+     * - Missing in Stripe: nothing is changed. A real subscription is never deleted in Stripe, so this
+     *   means wrong API keys (e.g. another Stripe account) or a broken record - unenrolling would be
+     *   a guess, so the case is only reported.
+     *
+     * The method never grants access; granting stays with process.php and the webhook.
+     *
+     * @param \stdClass $moodlesub Record of paygw_stripe_subscriptions
+     * @return array{0: string, 1: string|null} Outcome ('ended', 'updated', 'unchanged' or 'missing')
+     *     and the status in Stripe (null when missing).
+     * @throws ApiErrorException Errors other than a missing subscription
+     */
+    public function reconcile_subscription(\stdClass $moodlesub): array {
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
+        if (!$subscription) {
+            return ['missing', null];
+        }
+        if ($subscription->status === 'canceled') {
+            $this->cancel_subscription($moodlesub, false);
+            return ['ended', 'canceled'];
+        }
+        if ($subscription->status !== $moodlesub->status) {
+            $this->save_subscription_status($moodlesub, $subscription->status);
+            return ['updated', $subscription->status];
+        }
+        return ['unchanged', $subscription->status];
+    }
+
+    /**
      * Retrieve a subscription from Stripe, or null when it no longer exists there.
      *
      * @param string $subscriptionid Stripe subscription ID

@@ -116,6 +116,8 @@ $string['subscriptionstatus:incomplete'] = 'Incomplete';
 $string['subscriptionstatus:incomplete_expired'] = 'Expired';
 $string['subscriptionstatus:trialing'] = 'Trialing';
 $string['subscriptionstatus:paused'] = 'Paused';
+$string['task_reconcilesubscriptions'] = 'Reconcile subscription statuses with Stripe';
+$string['task_reconcilesubscriptions_incomplete'] = '{$a} subscription(s) could not be checked in Stripe - see the task log.';
 
 $string['payment:successful:subject'] = 'Payment successful';
 $string['payment:successful:message'] = 'Your payment was successful, you can now visit {$a->url}';
