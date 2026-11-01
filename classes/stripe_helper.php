@@ -221,6 +221,12 @@ class stripe_helper {
         if ($userid && self::is_enrolled_via_instance($instance, $userid)) {
             return 'purchaseunavailable_alreadyenrolled';
         }
+        // A suspended enrolment stays suspended after payment (enrol_user() does not change the
+        // status of an existing enrolment), so the user would pay without getting access back.
+        if ($userid && $DB->record_exists('user_enrolments', ['enrolid' => $instance->id, 'userid' => $userid,
+                'status' => ENROL_USER_SUSPENDED])) {
+            return 'purchaseunavailable_enrolsuspended';
+        }
         $context = \context_course::instance($course->id);
         if (!$course->visible && !$subscription && !has_capability('moodle/course:viewhiddencourses', $context)) {
             return 'purchaseunavailable_coursehidden';
@@ -668,7 +674,7 @@ class stripe_helper {
         global $DB;
         $customer = $this->stripe->customers->create([
                 'email' => $user->email,
-                'description' => get_string('customerdescription', 'paygw_stripe', $user->id),
+                'description' => get_string('customerdescriptionuser', 'paygw_stripe', $user->id),
                 'metadata' => $this->build_customer_metadata($user),
         ]);
         $record = new \stdClass();
@@ -1329,13 +1335,22 @@ class stripe_helper {
             return null;
         }
 
-        if ($webhook = $this->stripe->webhookEndpoints->retrieve($record->webhookid)) {
-            // Webhook still exists, lets set the secret and return.
-            $webhook->secret = $record->secret;
-            return $webhook;
+        try {
+            $webhook = $this->stripe->webhookEndpoints->retrieve($record->webhookid);
+        } catch (\Stripe\Exception\InvalidRequestException $e) {
+            if ($e->getHttpStatus() !== 404) {
+                throw $e;
+            }
+            // The endpoint was deleted in Stripe (e.g. in the Dashboard): forget it, so that
+            // create_webhook() registers a new one instead of every purchase failing.
+            $DB->delete_records('paygw_stripe_webhooks', ['id' => $record->id]);
+            error_log('paygw_stripe: webhook endpoint ' . $record->webhookid . ' of payment account ' .
+                $paymentaccountid . ' no longer exists in Stripe; a new one will be created.');
+            return null;
         }
-
-        return null;
+        // Webhook still exists, lets set the secret and return.
+        $webhook->secret = $record->secret;
+        return $webhook;
     }
 
     /**
