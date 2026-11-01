@@ -843,11 +843,14 @@ class stripe_helper {
         list($product, $price) = $this->create_product_and_price($config, $payable, $description, $cost, $component,
                 $paymentarea, $itemid);
 
-        if (!$customer = $this->get_customer($USER->id)) {
-            $customer = $this->create_customer($USER);
+        // Profile data comes from the database, not the session copy in $USER: changes made by an
+        // administrator (or a user sync) while the buyer is logged in reach Stripe right away.
+        $user = \core_user::get_user($USER->id, '*', MUST_EXIST);
+        if (!$customer = $this->get_customer($user->id)) {
+            $customer = $this->create_customer($user);
         }
         // Ensure an existing customer carries up-to-date moodle_* metadata (idempotent).
-        $customer = $this->sync_customer_metadata($customer, $USER);
+        $customer = $this->sync_customer_metadata($customer, $user);
 
         // Build the line item, attaching a manual Stripe Tax Rate in manual tax mode. Manual
         // tax_rates and automatic_tax are mutually exclusive in Stripe, so get_manual_tax_rate()
@@ -863,7 +866,7 @@ class stripe_helper {
         // Describe the course and the buyer on the payment, so the Checkout Session, the
         // payment_intent and the resulting invoice can all be read in Stripe without a lookup
         // in the Moodle database.
-        $sessionmetadata = $this->build_payment_metadata($USER, $component, $paymentarea, $itemid);
+        $sessionmetadata = $this->build_payment_metadata($user, $component, $paymentarea, $itemid);
 
         // Label for the payments list: the same name as the product (see build_product_name()).
         $paymentlabel = $this->build_product_name($component, $itemid, $description);
@@ -951,11 +954,14 @@ class stripe_helper {
         list($product, $price) = $this->create_product_and_price($config, $payable, $description, $cost, $component,
                 $paymentarea, $itemid, $pricedetails);
 
-        if (!$customer = $this->get_customer($USER->id)) {
-            $customer = $this->create_customer($USER);
+        // Profile data comes from the database, not the session copy in $USER: changes made by an
+        // administrator (or a user sync) while the buyer is logged in reach Stripe right away.
+        $user = \core_user::get_user($USER->id, '*', MUST_EXIST);
+        if (!$customer = $this->get_customer($user->id)) {
+            $customer = $this->create_customer($user);
         }
         // Ensure an existing customer carries up-to-date moodle_* metadata (idempotent).
-        $customer = $this->sync_customer_metadata($customer, $USER);
+        $customer = $this->sync_customer_metadata($customer, $user);
 
         // If anchored billing and/or trial period are enabled, set up the subscriptiondata parameter.
         $subscriptiondata = [];
@@ -985,7 +991,7 @@ class stripe_helper {
         // itself. Recurring invoices do not copy the subscription's metadata into their own
         // metadata; Stripe exposes it on each invoice as subscription_details.metadata, so
         // renewals can still be tied to the course and the buyer.
-        $sessionmetadata = $this->build_payment_metadata($USER, $component, $paymentarea, $itemid);
+        $sessionmetadata = $this->build_payment_metadata($user, $component, $paymentarea, $itemid);
         $subscriptiondata['metadata'] = array_merge($subscriptiondata['metadata'] ?? [], $sessionmetadata);
 
         // Create checkout session to set up subscription for customer.
