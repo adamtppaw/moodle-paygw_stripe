@@ -192,18 +192,43 @@ class stripe_helper {
      * forks (e.g. enrol_feestripe) alike. Already completed payments are not affected:
      * process.php still delivers what was paid for.
      *
+     * Exception: a hidden course can be bought when the payment account is in subscription mode.
+     * A subscription plan is sold as a hidden "subscription course" whose only job is to give
+     * access to the courses linked to it ("Course meta link"); it is hidden so that it does not
+     * show up in the subscriber's "My courses", profile and course search. Such a course is
+     * bought from a direct link to pay.php placed outside the course. One-time payments for
+     * hidden courses are still refused, so hiding a course still withdraws it from sale.
+     *
+     * When $userid is given, payment is also refused while that user already has active access
+     * through this very instance (see is_enrolled_via_instance()). Paying again would only charge
+     * the user twice: a second subscription, or a second one-time payment for the same course.
+     * Access gained another way (e.g. a course of a subscription plan) does not block buying the
+     * course itself, so a subscriber can still buy lifetime access to a single course.
+     *
      * @param \stdClass $instance The mdl_enrol record (see resolve_enrol_instance()).
+     * @param bool $subscription Whether the payment account of the instance is in subscription mode.
+     * @param int|null $userid User who wants to pay; null skips the "already enrolled" check.
      * @return string|null Language string identifier (paygw_stripe) with the reason, or null when purchase is allowed.
      */
-    public static function get_purchase_unavailable_reason(\stdClass $instance): ?string {
+    public static function get_purchase_unavailable_reason(\stdClass $instance, bool $subscription = false,
+            ?int $userid = null): ?string {
         global $DB;
 
         $course = $DB->get_record('course', ['id' => $instance->courseid], 'id, visible');
         if (!$course) {
             return 'purchaseunavailable_coursehidden';
         }
+        if ($userid && self::is_enrolled_via_instance($instance, $userid)) {
+            return 'purchaseunavailable_alreadyenrolled';
+        }
+        // A suspended enrolment stays suspended after payment (enrol_user() does not change the
+        // status of an existing enrolment), so the user would pay without getting access back.
+        if ($userid && $DB->record_exists('user_enrolments', ['enrolid' => $instance->id, 'userid' => $userid,
+                'status' => ENROL_USER_SUSPENDED])) {
+            return 'purchaseunavailable_enrolsuspended';
+        }
         $context = \context_course::instance($course->id);
-        if (!$course->visible && !has_capability('moodle/course:viewhiddencourses', $context)) {
+        if (!$course->visible && !$subscription && !has_capability('moodle/course:viewhiddencourses', $context)) {
             return 'purchaseunavailable_coursehidden';
         }
         if (!enrol_is_enabled($instance->enrol) || (int) $instance->status !== ENROL_INSTANCE_ENABLED) {
@@ -217,6 +242,127 @@ class stripe_helper {
             return 'purchaseunavailable_ended';
         }
         return null;
+    }
+
+    /**
+     * Whether a user currently has active access through a given enrolment instance.
+     *
+     * Active means: the user enrolment exists, is not suspended and is within its start and end
+     * dates. A suspended or expired enrolment does not count, so access can be bought again.
+     *
+     * @param \stdClass $instance The mdl_enrol record.
+     * @param int $userid
+     * @return bool
+     */
+    public static function is_enrolled_via_instance(\stdClass $instance, int $userid): bool {
+        global $DB;
+
+        $ue = $DB->get_record('user_enrolments', ['enrolid' => $instance->id, 'userid' => $userid]);
+        if (!$ue || (int) $ue->status !== ENROL_USER_ACTIVE) {
+            return false;
+        }
+        $now = time();
+        if (!empty($ue->timestart) && $ue->timestart > $now) {
+            return false;
+        }
+        if (!empty($ue->timeend) && $ue->timeend < $now) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * A subscription of the user that is still running, if any; it blocks buying another subscription.
+     *
+     * Subscription plans give access to whole groups of courses, so a second plan (or the same plan
+     * again) would only charge the user twice for the same access. The Moodle site is expected to show
+     * plan links only to users without a subscription; this is the second line of defence for a direct
+     * link to pay.php.
+     *
+     * Running means any status other than canceled, incomplete and incomplete_expired: active,
+     * trialing, past_due (Stripe is still retrying the payment), unpaid and paused. A subscription
+     * cancelled at the end of the period is still active until then and can be resumed instead.
+     * The stored status can be out of date (e.g. a webhook that did not reach Moodle), so each
+     * candidate is checked in Stripe first. A subscription that has ended there is synchronised
+     * (status and unenrolment, see cancel_subscription()) and does not block. When Stripe cannot be
+     * reached, the stored status is trusted.
+     *
+     * @param int $userid
+     * @return \stdClass|null Record of paygw_stripe_subscriptions, or null when nothing blocks the purchase.
+     */
+    public static function get_running_subscription(int $userid): ?\stdClass {
+        global $DB;
+
+        [$notin, $params] = $DB->get_in_or_equal(['canceled', 'incomplete', 'incomplete_expired'], SQL_PARAMS_NAMED,
+                'st', false);
+        $params['userid'] = $userid;
+        $candidates = $DB->get_records_select('paygw_stripe_subscriptions',
+                "userid = :userid AND (status IS NULL OR status $notin)", $params, 'id DESC');
+        foreach ($candidates as $moodlesub) {
+            $item = self::get_subscription_item($moodlesub);
+            if (!$item) {
+                return $moodlesub;
+            }
+            try {
+                $config = (object) helper::get_gateway_configuration($item->component, $item->paymentarea, $item->itemid,
+                        'stripe');
+                $stripehelper = new self($config->apikey, $config->secretkey);
+                $subscription = $stripehelper->retrieve_subscription_or_null($moodlesub->subscriptionid);
+                if ($subscription && !in_array($subscription->status, ['canceled', 'incomplete_expired'])) {
+                    if ($subscription->status !== $moodlesub->status) {
+                        $stripehelper->save_subscription_status($moodlesub, $subscription->status);
+                    }
+                    if ($subscription->status !== 'incomplete') {
+                        return $moodlesub;
+                    }
+                    continue;
+                }
+                // Ended (or deleted) in Stripe while Moodle still had it as running: catch up now.
+                $stripehelper->cancel_subscription($moodlesub, false);
+            } catch (ApiErrorException | \moodle_exception $e) {
+                error_log('paygw_stripe: cannot check subscription ' . $moodlesub->subscriptionid . ' before a purchase: ' .
+                        $e->getMessage());
+                return $moodlesub;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Where to send the user after a payment (or a cancelled Checkout) for a payment item.
+     *
+     * Normally this is the course page (core_payment's success URL after a payment, the course
+     * after a cancelled Checkout). A hidden course cannot be opened by a user without the
+     * "moodle/course:viewhiddencourses" capability (Moodle shows a "coursehidden" error), which
+     * is the case for a hidden subscription course: the user is sent to "My courses" after a
+     * payment (the courses of the plan are listed there) and to the site home page after a
+     * cancelled Checkout.
+     *
+     * @param string $component
+     * @param string $paymentarea
+     * @param int $itemid
+     * @param int $userid User who pays (the capability is checked for this user, not $USER,
+     *     because the method is also called from the webhook).
+     * @param bool $success true after a payment, false after a cancelled Checkout.
+     * @return moodle_url
+     */
+    public static function get_return_url(string $component, string $paymentarea, int $itemid, int $userid,
+            bool $success = true): moodle_url {
+        global $DB;
+
+        $instance = self::resolve_enrol_instance($component, $itemid);
+        if ($instance) {
+            $visible = $DB->get_field('course', 'visible', ['id' => $instance->courseid]);
+            $canview = $visible !== false && ((int) $visible === 1 || has_capability('moodle/course:viewhiddencourses',
+                    \context_course::instance($instance->courseid), $userid));
+            if (!$canview) {
+                return new moodle_url($success ? '/my/courses.php' : '/');
+            }
+        }
+        if ($success) {
+            return helper::get_success_url($component, $paymentarea, $itemid);
+        }
+        return $instance ? new moodle_url('/course/view.php', ['id' => $instance->courseid]) : new moodle_url('/');
     }
 
     /**
@@ -499,7 +645,14 @@ class stripe_helper {
             return null;
         }
         try {
-            return $this->stripe->customers->retrieve($record->customerid);
+            $customer = $this->stripe->customers->retrieve($record->customerid);
+            // A customer deleted in Stripe is still returned (with deleted = true, no exception) but cannot
+            // be used in a Checkout Session: forget it, so a new customer is created.
+            if (!empty($customer->deleted)) {
+                $DB->delete_records('paygw_stripe_customers', ['userid' => $userid]);
+                return null;
+            }
+            return $customer;
         } catch (ApiErrorException $e) {
             // Customer exists in Moodle but not in stripe, possibly the keys were switched.
             // Delete customer for creation later.
@@ -521,7 +674,7 @@ class stripe_helper {
         global $DB;
         $customer = $this->stripe->customers->create([
                 'email' => $user->email,
-                'description' => get_string('customerdescription', 'paygw_stripe', $user->id),
+                'description' => get_string('customerdescriptionuser', 'paygw_stripe', $user->id),
                 'metadata' => $this->build_customer_metadata($user),
         ]);
         $record = new \stdClass();
@@ -690,11 +843,14 @@ class stripe_helper {
         list($product, $price) = $this->create_product_and_price($config, $payable, $description, $cost, $component,
                 $paymentarea, $itemid);
 
-        if (!$customer = $this->get_customer($USER->id)) {
-            $customer = $this->create_customer($USER);
+        // Profile data comes from the database, not the session copy in $USER: changes made by an
+        // administrator (or a user sync) while the buyer is logged in reach Stripe right away.
+        $user = \core_user::get_user($USER->id, '*', MUST_EXIST);
+        if (!$customer = $this->get_customer($user->id)) {
+            $customer = $this->create_customer($user);
         }
         // Ensure an existing customer carries up-to-date moodle_* metadata (idempotent).
-        $customer = $this->sync_customer_metadata($customer, $USER);
+        $customer = $this->sync_customer_metadata($customer, $user);
 
         // Build the line item, attaching a manual Stripe Tax Rate in manual tax mode. Manual
         // tax_rates and automatic_tax are mutually exclusive in Stripe, so get_manual_tax_rate()
@@ -710,7 +866,7 @@ class stripe_helper {
         // Describe the course and the buyer on the payment, so the Checkout Session, the
         // payment_intent and the resulting invoice can all be read in Stripe without a lookup
         // in the Moodle database.
-        $sessionmetadata = $this->build_payment_metadata($USER, $component, $paymentarea, $itemid);
+        $sessionmetadata = $this->build_payment_metadata($user, $component, $paymentarea, $itemid);
 
         // Label for the payments list: the same name as the product (see build_product_name()).
         $paymentlabel = $this->build_product_name($component, $itemid, $description);
@@ -798,11 +954,14 @@ class stripe_helper {
         list($product, $price) = $this->create_product_and_price($config, $payable, $description, $cost, $component,
                 $paymentarea, $itemid, $pricedetails);
 
-        if (!$customer = $this->get_customer($USER->id)) {
-            $customer = $this->create_customer($USER);
+        // Profile data comes from the database, not the session copy in $USER: changes made by an
+        // administrator (or a user sync) while the buyer is logged in reach Stripe right away.
+        $user = \core_user::get_user($USER->id, '*', MUST_EXIST);
+        if (!$customer = $this->get_customer($user->id)) {
+            $customer = $this->create_customer($user);
         }
         // Ensure an existing customer carries up-to-date moodle_* metadata (idempotent).
-        $customer = $this->sync_customer_metadata($customer, $USER);
+        $customer = $this->sync_customer_metadata($customer, $user);
 
         // If anchored billing and/or trial period are enabled, set up the subscriptiondata parameter.
         $subscriptiondata = [];
@@ -832,7 +991,7 @@ class stripe_helper {
         // itself. Recurring invoices do not copy the subscription's metadata into their own
         // metadata; Stripe exposes it on each invoice as subscription_details.metadata, so
         // renewals can still be tied to the course and the buyer.
-        $sessionmetadata = $this->build_payment_metadata($USER, $component, $paymentarea, $itemid);
+        $sessionmetadata = $this->build_payment_metadata($user, $component, $paymentarea, $itemid);
         $subscriptiondata['metadata'] = array_merge($subscriptiondata['metadata'] ?? [], $sessionmetadata);
 
         // Create checkout session to set up subscription for customer.
@@ -894,7 +1053,8 @@ class stripe_helper {
      */
     public function is_paid(string $sessionid): bool {
         $session = $this->stripe->checkout->sessions->retrieve($sessionid);
-        return $session->payment_status === 'paid';
+        // no_payment_required: nothing was due (e.g. a 100% promotion code); the purchase is complete.
+        return in_array($session->payment_status, ['paid', 'no_payment_required'], true);
     }
 
     /**
@@ -907,7 +1067,8 @@ class stripe_helper {
     public function is_pending(string $sessionid): bool {
         // Check payment intent here as the session status is a simple pass/fail that doesn't include processing.
         $session = $this->stripe->checkout->sessions->retrieve($sessionid, ['expand' => ['payment_intent']]);
-        return $session->payment_intent->status === 'processing';
+        // A session without a payment intent (nothing to pay, or not paid at all) is never pending.
+        return $session->payment_intent !== null && $session->payment_intent->status === 'processing';
     }
 
     /**
@@ -921,6 +1082,40 @@ class stripe_helper {
         $session = $this->stripe->checkout->sessions->retrieve($sessionid);
         $subscription = $this->stripe->subscriptions->retrieve($session->subscription);
         return $subscription->status;
+    }
+
+    /**
+     * Whether a Checkout Session belongs to the given buyer and payment item.
+     *
+     * process.php takes the session ID, the item and the buyer (the logged-in user) from the request.
+     * Without this check a paid session of a cheap course, or the session ID of another user, opened
+     * with a different itemid in the address would enrol the current user in that item and record a
+     * payment for it. The plugin stores the buyer and the item in the session metadata
+     * (build_payment_metadata()), so a session is accepted only when both match and the session was
+     * created by this site.
+     *
+     * @param string $sessionid Stripe session ID
+     * @param int $userid Logged-in user
+     * @param string $component
+     * @param string $paymentarea
+     * @param int $itemid
+     * @return bool
+     * @throws ApiErrorException
+     */
+    public function session_matches(string $sessionid, int $userid, string $component, string $paymentarea,
+            int $itemid): bool {
+        global $CFG;
+
+        $metadata = $this->stripe->checkout->sessions->retrieve($sessionid)->metadata;
+        if (!isset($metadata['userid'], $metadata['component'], $metadata['paymentarea'], $metadata['itemid'])) {
+            return false;
+        }
+        $site = $metadata['moodle_site'] ?? $CFG->wwwroot;
+        return (int) $metadata['userid'] === $userid
+                && $metadata['component'] === $component
+                && $metadata['paymentarea'] === $paymentarea
+                && (int) $metadata['itemid'] === $itemid
+                && $site === $CFG->wwwroot;
     }
 
     /**
@@ -962,10 +1157,12 @@ class stripe_helper {
      * Retrieve Stipe subscription details and save in Moodle based on Stripe checkout session.
      *
      * @param Session $session
-     * @return void
+     * @param int|null $userid Owner of the subscription; defaults to the current user. The webhook
+     *     passes the user from the session metadata, as it runs without a user session.
+     * @return \Stripe\Subscription
      * @throws \dml_exception
      */
-    private function save_subscription(Session $session) {
+    private function save_subscription(Session $session, ?int $userid = null): \Stripe\Subscription {
         global $DB, $USER;
 
         $subscription = $this->stripe->subscriptions->retrieve($session->subscription);
@@ -974,28 +1171,60 @@ class stripe_helper {
         if ($datum != null) {
             $datum->status = $subscription->status;
             $DB->update_record('paygw_stripe_subscriptions', $datum);
-            return;
+            return $subscription;
         }
 
         $datum = new \stdClass();
-        $datum->userid = $USER->id;
+        $datum->userid = $userid ?? $USER->id;
         $datum->subscriptionid = $session->subscription;
         $datum->customerid = $session->customer->id;
         $datum->status = $subscription->status;
         $datum->productid = $session->line_items->first()->price->product;
         $datum->priceid = $session->line_items->first()->price->id;
+        // The item the subscription was bought for, independent of the product mapping (see get_subscription_item()).
+        $datum->component = $session->metadata['component'] ?? null;
+        $datum->paymentarea = $session->metadata['paymentarea'] ?? null;
+        $datum->itemid = isset($session->metadata['itemid']) ? (int) $session->metadata['itemid'] : null;
 
         $DB->insert_record('paygw_stripe_subscriptions', $datum);
+        return $subscription;
+    }
+
+    /**
+     * The payment item (e.g. an enrol instance of a subscription course) a Moodle subscription was bought for.
+     *
+     * Read from the subscription record itself. Older records (saved before the item was stored with
+     * the subscription) fall back to the product mapping. The mapping alone is not reliable: get_product()
+     * removes it when the product is archived in Stripe, and the next purchase maps the item to a new
+     * product, so existing subscriptions of the plan would lose their item (no list row, no cancelling,
+     * no unenrolment when they end).
+     *
+     * @param \stdClass $moodlesub Record of paygw_stripe_subscriptions
+     * @return \stdClass|null Object with component, paymentarea and itemid, or null when unknown.
+     */
+    public static function get_subscription_item(\stdClass $moodlesub): ?\stdClass {
+        global $DB;
+
+        if (!empty($moodlesub->component) && !empty($moodlesub->paymentarea) && !empty($moodlesub->itemid)) {
+            return (object) ['component' => $moodlesub->component, 'paymentarea' => $moodlesub->paymentarea,
+                    'itemid' => (int) $moodlesub->itemid];
+        }
+        $products = $DB->get_records('paygw_stripe_products', ['productid' => $moodlesub->productid], 'id DESC',
+                'id, component, paymentarea, itemid', 0, 1);
+        $product = reset($products);
+        return $product ? (object) ['component' => $product->component, 'paymentarea' => $product->paymentarea,
+                'itemid' => (int) $product->itemid] : null;
     }
 
     /**
      * Save payment intent status with customer and product details.
      *
      * @param Session $session
+     * @param int|null $userid Buyer; defaults to the current user (see save_subscription()).
      * @return void
      * @throws \dml_exception
      */
-    private function save_payment_intent(Session $session) {
+    private function save_payment_intent(Session $session, ?int $userid = null) {
         global $DB, $USER;
 
         $intent = $DB->get_record('paygw_stripe_intents', ['paymentintent' => $session->payment_intent]);
@@ -1007,7 +1236,7 @@ class stripe_helper {
         }
 
         $intent = new \stdClass();
-        $intent->userid = $USER->id;
+        $intent->userid = $userid ?? $USER->id;
         $intent->paymentintent = $session->payment_intent;
         $intent->customerid = $session->customer->id;
         $intent->amounttotal = $session->amount_total;
@@ -1055,6 +1284,49 @@ class stripe_helper {
     }
 
     /**
+     * Deliver the course unless it has already been delivered for this payment.
+     *
+     * The same payment can be delivered from two places: process.php when the buyer comes back
+     * from Stripe, and the webhook (checkout.session.completed or
+     * checkout.session.async_payment_succeeded), which also works when the buyer never comes back.
+     * Whichever runs first delivers; the other sees that the user already has active access through
+     * the enrolment instance and skips, so no second payment record is saved in Moodle. A lock
+     * prevents both from delivering when they run at the same time.
+     *
+     * For items that are not enrolment instances there is nothing to check, so they are delivered
+     * every time (the previous behaviour).
+     *
+     * @param string $component
+     * @param string $paymentarea
+     * @param int $itemid
+     * @param int $userid
+     * @return bool True if the course was delivered now, false if it had already been delivered.
+     */
+    public function deliver_course_once(string $component, string $paymentarea, int $itemid, int $userid): bool {
+        $instance = self::resolve_enrol_instance($component, $itemid);
+        if (!$instance) {
+            $this->deliver_course($component, $paymentarea, $itemid, $userid);
+            return true;
+        }
+
+        $lockfactory = \core\lock\lock_config::get_lock_factory('paygw_stripe');
+        $lock = $lockfactory->get_lock("deliver_{$instance->id}_{$userid}", 30);
+        if (!$lock) {
+            // Another request is delivering this very payment right now.
+            return false;
+        }
+        try {
+            if (self::is_enrolled_via_instance($instance, $userid)) {
+                return false;
+            }
+            $this->deliver_course($component, $paymentarea, $itemid, $userid);
+            return true;
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
      * Find and return webhook endpoint if it exists.
      * Retrieve secret from Moodle database and add to webhook object.
      *
@@ -1069,13 +1341,22 @@ class stripe_helper {
             return null;
         }
 
-        if ($webhook = $this->stripe->webhookEndpoints->retrieve($record->webhookid)) {
-            // Webhook still exists, lets set the secret and return.
-            $webhook->secret = $record->secret;
-            return $webhook;
+        try {
+            $webhook = $this->stripe->webhookEndpoints->retrieve($record->webhookid);
+        } catch (\Stripe\Exception\InvalidRequestException $e) {
+            if ($e->getHttpStatus() !== 404) {
+                throw $e;
+            }
+            // The endpoint was deleted in Stripe (e.g. in the Dashboard): forget it, so that
+            // create_webhook() registers a new one instead of every purchase failing.
+            $DB->delete_records('paygw_stripe_webhooks', ['id' => $record->id]);
+            error_log('paygw_stripe: webhook endpoint ' . $record->webhookid . ' of payment account ' .
+                $paymentaccountid . ' no longer exists in Stripe; a new one will be created.');
+            return null;
         }
-
-        return null;
+        // Webhook still exists, lets set the secret and return.
+        $webhook->secret = $record->secret;
+        return $webhook;
     }
 
     /**
@@ -1123,13 +1404,54 @@ class stripe_helper {
      * @throws ApiErrorException|\dml_exception
      */
     public function process_stripe_event(Event $event, array $metadata): bool {
-        global $DB;
+        global $CFG, $DB;
 
         if (!isset($event->data->object)) {
             return false;
         }
 
         switch ($event->type) {
+            // A Checkout Session was completed. Until now the course was delivered only by
+            // process.php, i.e. when the buyer came back from Stripe to Moodle; a closed tab or a
+            // lost connection meant a paid purchase without access. The webhook now saves the
+            // payment and delivers the course as well. Delivery is idempotent (deliver_course_once()),
+            // so it does not matter whether process.php or the webhook runs first.
+            case 'checkout.session.completed':
+                $session = $this->stripe->checkout->sessions->retrieve($event->data->object->id,
+                        ['expand' => ['line_items', 'customer']]);
+                // Events are sent to all subscribed webhooks: skip sessions created by another site
+                // using the same Stripe account and sessions not created by this plugin (no buyer).
+                $sessionsite = $session->metadata['moodle_site'] ?? null;
+                if ($sessionsite !== null && $sessionsite !== $CFG->wwwroot) {
+                    return false;
+                }
+                $userid = (int) ($session->metadata['userid'] ?? 0);
+                if (!$userid || !$DB->record_exists('user', ['id' => $userid, 'deleted' => 0])) {
+                    return false;
+                }
+
+                if ($session->mode === 'subscription') {
+                    $subscription = $this->save_subscription($session, $userid);
+                    if (in_array($subscription->status, ['incomplete', 'incomplete_expired', 'canceled'])) {
+                        // Same rule as process.php: no access for a subscription that is not active.
+                        return true;
+                    }
+                } else if ($session->mode === 'payment') {
+                    // No payment intent when nothing had to be paid (e.g. a 100% coupon).
+                    if ($session->payment_intent != null) {
+                        $this->save_payment_intent($session, $userid);
+                    }
+                    // Delayed payment methods complete the session before the money arrives; the
+                    // course is then delivered on checkout.session.async_payment_succeeded.
+                    if (!in_array($session->payment_status, ['paid', 'no_payment_required'])) {
+                        return true;
+                    }
+                } else {
+                    return false;
+                }
+
+                $this->deliver_course_once($metadata['component'], $metadata['paymentarea'], $metadata['itemid'], $userid);
+                break;
             // Process an async payment event.
             // Deliver the course if payment was successful or notify the user the payment failed.
             case 'checkout.session.async_payment_succeeded':
@@ -1140,11 +1462,13 @@ class stripe_helper {
                 }
                 $this->save_payment_status($session->id); // Update saved intent status.
 
-                // Deliver course.
-                $this->deliver_course($metadata['component'], $metadata['paymentarea'], $metadata['itemid'], $intentrecord->userid);
+                // Deliver course (skipped if it was already delivered for this payment).
+                $this->deliver_course_once($metadata['component'], $metadata['paymentarea'], $metadata['itemid'],
+                        $intentrecord->userid);
 
                 // Notify user payment was successful.
-                $url = helper::get_success_url($metadata['component'], $metadata['paymentarea'], $metadata['itemid']);
+                $url = self::get_return_url($metadata['component'], $metadata['paymentarea'], $metadata['itemid'],
+                        $intentrecord->userid);
                 $this->notify_user($intentrecord->userid, 'successful', ['url' => $url->out()]);
                 break;
             case 'checkout.session.async_payment_failed':
@@ -1216,9 +1540,9 @@ class stripe_helper {
      * @throws \moodle_exception
      */
     public function get_subscription_table_data(\stdClass $moodlesub): ?array {
-        $product = $this->stripe->products->retrieve($moodlesub->productid);
-        $price = $this->stripe->prices->retrieve($moodlesub->priceid);
         try {
+            $product = $this->stripe->products->retrieve($moodlesub->productid);
+            $price = $this->stripe->prices->retrieve($moodlesub->priceid);
             $subscription = $this->stripe->subscriptions->retrieve($moodlesub->subscriptionid, ['expand' => ['schedule']]);
 
             $cancellink =
@@ -1227,17 +1551,39 @@ class stripe_helper {
                     new moodle_url('/payment/gateway/stripe/subscriptions.php',
                             ['action' => 'portal', 'subscriptionid' => $moodlesub->id]);
 
+            $fee = $this->get_localised_cost($price->unit_amount, $price->currency) . ' / ' .
+                    get_string('customsubscriptioninterval:' . $price->recurring->interval, 'paygw_stripe');
+
+            // Cancelled at the end of the paid period: still active, but will not renew. Show when
+            // access ends and offer to resume instead of cancelling again.
+            if ($subscription->status !== 'canceled' && !empty($subscription->cancel_at_period_end)) {
+                $resumelink = new moodle_url('/payment/gateway/stripe/subscriptions.php',
+                        ['action' => 'resume', 'subscriptionid' => $moodlesub->id, 'sesskey' => sesskey()]);
+                return [
+                        $product->name,
+                        $fee,
+                        '–',
+                        get_string('subscriptionendson', 'paygw_stripe',
+                                self::format_subscription_date($subscription->current_period_end)),
+                        '',
+                        \html_writer::link($resumelink, get_string('resumesubscription', 'paygw_stripe')),
+                ];
+            }
+
             return [
                     $product->name,
-                    $this->get_localised_cost($price->unit_amount, $price->currency) . ' / ' .
-                    get_string('customsubscriptioninterval:' . $price->recurring->interval, 'paygw_stripe'),
-                    userdate($subscription->current_period_end),
-                    get_string('subscriptionstatus:' . $moodlesub->status, 'paygw_stripe'),
-                    $moodlesub->status != 'canceled' ?
+                    $fee,
+                    $subscription->status !== 'canceled' ? userdate($subscription->current_period_end) : '–',
+                    get_string('subscriptionstatus:' . $subscription->status, 'paygw_stripe'),
+                    $subscription->status != 'canceled' ?
                             \html_writer::link($portallink, get_string('updatepaymentmethod', 'paygw_stripe')) : '',
-                    $moodlesub->status != 'canceled' ? \html_writer::link($cancellink, get_string('cancel', 'paygw_stripe')) : '',
+                    $subscription->status != 'canceled' ?
+                            \html_writer::link($cancellink, get_string('cancel', 'paygw_stripe')) : '',
             ];
         } catch (ApiErrorException $err) {
+            // Skip the row instead of breaking the whole page, but leave a trace for the admin.
+            error_log('paygw_stripe: cannot load subscription ' . $moodlesub->subscriptionid . ' for the list: ' .
+                    $err->getMessage());
             return null;
         }
     }
@@ -1246,28 +1592,47 @@ class stripe_helper {
      * Cancel a given subscription.
      * Unenrol the user from a course if that was the product chosen.
      *
+     * The current state is read from Stripe first. A subscription that is already cancelled in
+     * Stripe (e.g. in the Dashboard, the customer portal or after failed renewals, while the
+     * webhook did not reach Moodle) or that no longer exists there is not cancelled again: that
+     * call used to throw ("No such subscription") and left Moodle out of sync. In both cases the
+     * Moodle record is set to the Stripe status ("canceled" for a missing subscription) and the
+     * user is unenrolled, so the access matches what the user pays for.
+     *
      * @param \stdClass $moodlesub Moodle subscription record
      * @param bool $cancelstripe Attempt to cancel subscription within Stripe
-     * @return void
-     * @throws ApiErrorException
+     * @return bool True if the subscription was cancelled in Stripe by this call, false if it was
+     *     already cancelled or missing in Stripe (or $cancelstripe is false).
+     * @throws ApiErrorException Other errors than a missing subscription
      * @throws \coding_exception
      * @throws \dml_exception
      */
-    public function cancel_subscription(\stdClass $moodlesub, bool $cancelstripe = true) {
+    public function cancel_subscription(\stdClass $moodlesub, bool $cancelstripe = true): bool {
         global $DB;
 
-        if ($cancelstripe) {
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
+
+        $cancelled = false;
+        if ($cancelstripe && $subscription && $subscription->status !== 'canceled') {
             $subscription = $this->stripe->subscriptions->cancel($moodlesub->subscriptionid);
-        } else {
-            $subscription = $this->stripe->subscriptions->retrieve($moodlesub->subscriptionid);
+            $cancelled = true;
         }
+        $status = $subscription ? $subscription->status : 'canceled';
+
         $datum = $DB->get_record('paygw_stripe_subscriptions', ['subscriptionid' => $moodlesub->subscriptionid]);
-        $datum->status = $subscription->status;
+        $datum->status = $status;
         $DB->update_record('paygw_stripe_subscriptions', $datum);
 
-        $product = $DB->get_record('paygw_stripe_products', ['productid' => $moodlesub->productid]);
+        if ($status !== 'canceled') {
+            // Stripe did not end the subscription (should not happen after cancel()); keep access.
+            return $cancelled;
+        }
+
+        $product = self::get_subscription_item($datum);
         if (!$product) {
-            return;
+            debugging('paygw_stripe: no payment item for subscription ' . $moodlesub->subscriptionid . ', user ' .
+                    $moodlesub->userid . ' was not unenrolled.', DEBUG_DEVELOPER);
+            return $cancelled;
         }
         // A course was the product (any enrolment plugin, e.g. enrol_fee or enrol_feestripe).
         // Unenrol through the instance's own plugin: enrol_plugin::unenrol_user() refuses an
@@ -1280,6 +1645,161 @@ class stripe_helper {
             debugging('paygw_stripe: enrol instance ' . $product->itemid . ' (' . $product->component .
                     ') not found, user ' . $moodlesub->userid . ' was not unenrolled.', DEBUG_DEVELOPER);
         }
+        return $cancelled;
+    }
+
+    /**
+     * Compare one subscription record with Stripe and catch up on a change that Moodle missed.
+     *
+     * Used by the daily reconcile_subscriptions task as a safety net for lost webhooks: access to
+     * the courses of a plan is removed only on customer.subscription.deleted, so a webhook that never
+     * arrives (Moodle down for longer than Stripe retries, rolled secret, disabled endpoint) would
+     * otherwise leave access without payment.
+     *
+     * - Ended in Stripe (canceled): the same handling as the webhook - status and unenrolment.
+     * - Any other status that differs from the stored one: only the status is stored. Access never
+     *   depends on it (past_due keeps access while Stripe retries the payment).
+     * - Missing in Stripe: nothing is changed. A real subscription is never deleted in Stripe, so this
+     *   means wrong API keys (e.g. another Stripe account) or a broken record - unenrolling would be
+     *   a guess, so the case is only reported.
+     *
+     * The method never grants access; granting stays with process.php and the webhook.
+     *
+     * @param \stdClass $moodlesub Record of paygw_stripe_subscriptions
+     * @return array{0: string, 1: string|null} Outcome ('ended', 'updated', 'unchanged' or 'missing')
+     *     and the status in Stripe (null when missing).
+     * @throws ApiErrorException Errors other than a missing subscription
+     */
+    public function reconcile_subscription(\stdClass $moodlesub): array {
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
+        if (!$subscription) {
+            return ['missing', null];
+        }
+        if ($subscription->status === 'canceled') {
+            $this->cancel_subscription($moodlesub, false);
+            return ['ended', 'canceled'];
+        }
+        if ($subscription->status !== $moodlesub->status) {
+            $this->save_subscription_status($moodlesub, $subscription->status);
+            return ['updated', $subscription->status];
+        }
+        return ['unchanged', $subscription->status];
+    }
+
+    /**
+     * Retrieve a subscription from Stripe, or null when it no longer exists there.
+     *
+     * @param string $subscriptionid Stripe subscription ID
+     * @return \Stripe\Subscription|null
+     * @throws ApiErrorException Other errors than a missing subscription
+     */
+    private function retrieve_subscription_or_null(string $subscriptionid): ?\Stripe\Subscription {
+        try {
+            return $this->stripe->subscriptions->retrieve($subscriptionid);
+        } catch (\Stripe\Exception\InvalidRequestException $e) {
+            if ($e->getStripeCode() !== 'resource_missing') {
+                throw $e;
+            }
+            error_log('paygw_stripe: subscription ' . $subscriptionid . ' not found in Stripe.');
+            return null;
+        }
+    }
+
+    /**
+     * Store the current Stripe status of a subscription in Moodle.
+     *
+     * @param \stdClass $moodlesub Moodle subscription record
+     * @param string $status Stripe subscription status
+     * @return void
+     */
+    private function save_subscription_status(\stdClass $moodlesub, string $status) {
+        global $DB;
+        $DB->set_field('paygw_stripe_subscriptions', 'status', $status, ['subscriptionid' => $moodlesub->subscriptionid]);
+    }
+
+    /**
+     * Cancel a subscription at the end of the current, already paid billing period.
+     *
+     * This is what the user does on "My subscriptions". Stripe keeps the subscription active until
+     * the end of the period (cancel_at_period_end = true) and does not charge the card again. When
+     * the period ends, Stripe cancels the subscription and sends customer.subscription.deleted;
+     * the webhook then unenrols the user (cancel_subscription() with $cancelstripe = false). Until
+     * then the user keeps access and can resume the subscription (resume_subscription()).
+     *
+     * A subscription that is not being paid for (incomplete, unpaid) has no paid period to keep,
+     * so it is cancelled immediately. A subscription that is already cancelled or missing in
+     * Stripe is only synced (see cancel_subscription()).
+     *
+     * @param \stdClass $moodlesub Moodle subscription record
+     * @return array{0: string, 1: int|null} Outcome ('scheduled', 'cancelled' or 'alreadyended') and,
+     *     for 'scheduled', the timestamp when access ends.
+     * @throws ApiErrorException
+     * @throws \coding_exception
+     * @throws \dml_exception
+     */
+    public function schedule_cancellation(\stdClass $moodlesub): array {
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
+        if (!$subscription || in_array($subscription->status, ['canceled', 'incomplete_expired'])) {
+            $this->cancel_subscription($moodlesub, false);
+            return ['alreadyended', null];
+        }
+        if (in_array($subscription->status, ['incomplete', 'unpaid'])) {
+            $this->cancel_subscription($moodlesub);
+            return ['cancelled', null];
+        }
+        if (empty($subscription->cancel_at_period_end)) {
+            $subscription = $this->stripe->subscriptions->update($moodlesub->subscriptionid, ['cancel_at_period_end' => true]);
+        }
+        $this->save_subscription_status($moodlesub, $subscription->status);
+        return ['scheduled', (int) $subscription->current_period_end];
+    }
+
+    /**
+     * Undo a cancellation scheduled for the end of the billing period.
+     *
+     * Possible only until the period ends; a subscription that has already ended cannot be
+     * resumed (a new purchase is needed).
+     *
+     * @param \stdClass $moodlesub Moodle subscription record
+     * @return int|null Timestamp of the next renewal, or null when the subscription cannot be resumed.
+     * @throws ApiErrorException
+     */
+    public function resume_subscription(\stdClass $moodlesub): ?int {
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
+        if (!$subscription || in_array($subscription->status, ['canceled', 'incomplete_expired', 'incomplete', 'unpaid'])) {
+            return null;
+        }
+        if (!empty($subscription->cancel_at_period_end)) {
+            $subscription = $this->stripe->subscriptions->update($moodlesub->subscriptionid, ['cancel_at_period_end' => false]);
+        }
+        $this->save_subscription_status($moodlesub, $subscription->status);
+        return (int) $subscription->current_period_end;
+    }
+
+    /**
+     * Read the end of the current billing period, i.e. until when a cancelled subscription keeps access.
+     *
+     * @param \stdClass $moodlesub Moodle subscription record
+     * @return int|null Timestamp of the end of the current period; null when the subscription has
+     *     no paid period to keep (already ended, missing, incomplete or unpaid).
+     * @throws ApiErrorException
+     */
+    public function get_current_period_end(\stdClass $moodlesub): ?int {
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
+        if (!$subscription || in_array($subscription->status, ['canceled', 'incomplete_expired', 'incomplete', 'unpaid'])) {
+            return null;
+        }
+        return (int) $subscription->current_period_end;
+    }
+
+    /**
+     * Format a date for subscription messages (day, month and year in the user's language).
+     *
+     * @param int $timestamp
+     * @return string
+     */
+    public static function format_subscription_date(int $timestamp): string {
+        return userdate($timestamp, get_string('strftimedate', 'langconfig'));
     }
 
     /**

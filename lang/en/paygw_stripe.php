@@ -40,7 +40,7 @@ $string['stripeaccount_help'] = 'For creating the direct charge branding page';
 $string['paymentsuccessful'] = 'Payment was successful';
 $string['paymentcancelled'] = 'Payment was cancelled';
 $string['paymentpending'] = 'Payment is pending, you will be enrolled when the payment has cleared.';
-$string['customerdescription'] = 'Moodle User ID: {$a}';
+$string['customerdescriptionuser'] = 'Moodle User ID: {$a}';
 $string['enableautomatictax'] = 'Enable automatic tax';
 $string['enableautomatictax_desc'] = 'Automatic tax must be enabled and configured in the Stripe dashboard.';
 $string['taxmode'] = 'Tax mode';
@@ -76,15 +76,24 @@ $string['trialperiod_help'] = 'E.g. the first interval is free. If the subscript
 $string['failedtosetdefaultpaymentmethod'] = 'Failed to set up a payment method for subscription, please try again.';
 $string['subscriptionerror'] = 'There was an error creating the subscription, please contact the site administrator for help';
 $string['cancelsubscription'] = 'Cancel subscription';
-$string['cancelsubscriptionconfirm'] = 'Are you sure you wish to cancel this subscription?';
+$string['cancelsubscriptionconfirmgeneric'] = 'Are you sure you wish to cancel this subscription?';
 $string['product'] = 'Product';
 $string['fee'] = 'Fee';
 $string['scheduledrenewal'] = 'Scheduled Renewal';
 $string['status'] = 'Status';
 $string['updatepaymentmethod'] = 'Update Payment Method';
 $string['cancel'] = 'Cancel';
+$string['subscriptionactionerror'] = 'The subscription could not be changed right now. Please try again later or contact the site administrator.';
+$string['subscriptionalreadycancelled'] = 'This subscription had already been cancelled. Its status has been updated.';
+$string['subscriptioncancelled'] = 'The subscription has been cancelled.';
+$string['cancelsubscriptionconfirmuntil'] = 'Are you sure you wish to cancel this subscription? It will end on {$a}. Until then you keep access to the courses and can resume the subscription on the subscriptions page.';
+$string['resumesubscription'] = 'Resume';
+$string['subscriptioncancelscheduled'] = 'The subscription will end on {$a}. Until then you keep access to the courses and can resume it on this page.';
+$string['subscriptionendson'] = 'Cancelled – active until {$a}';
+$string['subscriptionnotresumable'] = 'This subscription has already ended and cannot be resumed.';
+$string['subscriptionresumed'] = 'The subscription has been resumed and will renew on {$a}.';
 $string['subscriptionssubheading'] =
-    'This page lists the subscriptions you have purchased. You can cancel subscriptions here, cancellations will be processed immediately and you will not be able to enter the course again.';
+    'This page lists the subscriptions you have purchased. You can cancel them here – a cancelled subscription stays active until the end of the paid period, and you keep access to the courses until then.';
 
 $string['customsubscriptioninterval:day'] = 'Day';
 $string['customsubscriptioninterval:week'] = 'Week';
@@ -107,6 +116,8 @@ $string['subscriptionstatus:incomplete'] = 'Incomplete';
 $string['subscriptionstatus:incomplete_expired'] = 'Expired';
 $string['subscriptionstatus:trialing'] = 'Trialing';
 $string['subscriptionstatus:paused'] = 'Paused';
+$string['task_reconcilesubscriptions'] = 'Reconcile subscription statuses with Stripe';
+$string['task_reconcilesubscriptions_incomplete'] = '{$a} subscription(s) could not be checked in Stripe - see the task log.';
 
 $string['payment:successful:subject'] = 'Payment successful';
 $string['payment:successful:message'] = 'Your payment was successful, you can now visit {$a->url}';
@@ -145,7 +156,12 @@ $string['privacy:metadata:stripe_subscriptions'] =
 $string['privacy:metadata:stripe_subscriptions:userid'] = 'Moodle user ID';
 
 $string['stripeinvoices'] = 'Manage Stripe invoices and receipts';
+$string['purchaseunavailable_alreadyenrolled'] = 'You already have active access, so there is nothing to pay for.';
+$string['purchaseunavailable_alreadysubscribed'] = 'You already have a subscription, so there is no need to buy another one. You can check its status below and, if it has been cancelled, resume it until the end of the paid period.';
 $string['purchaseunavailable_coursehidden'] = 'This course is no longer available for purchase.';
 $string['purchaseunavailable_enroldisabled'] = 'Enrolment in this course is closed, so it cannot be purchased.';
 $string['purchaseunavailable_ended'] = 'Enrolment in this course has ended, so it can no longer be purchased.';
+$string['purchaseunavailable_enrolsuspended'] = 'Your access to this course is suspended, so it cannot be purchased. Please contact the site administrator.';
 $string['purchaseunavailable_notstarted'] = 'Enrolment in this course has not started yet, so it cannot be purchased now.';
+$string['paymentnotcompleted'] = 'The payment was not completed, so no access was granted. You can try again.';
+$string['sessionmismatch'] = 'This payment does not belong to this purchase or to this account, so no access was granted. If you have been charged, please contact the site administrator.';

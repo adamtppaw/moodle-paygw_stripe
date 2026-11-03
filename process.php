@@ -40,6 +40,18 @@ $config = (object) helper::get_gateway_configuration($component, $paymentarea, $
 
 $stripehelper = new stripe_helper($config->apikey, $config->secretkey);
 
+// The session ID comes from the request: accept it only for the buyer and the item it was created
+// for (see stripe_helper::session_matches()). An unknown session ID is refused the same way.
+try {
+    $sessionmatches = $stripehelper->session_matches($sessionid, (int) $USER->id, $component, $paymentarea, $itemid);
+} catch (\Stripe\Exception\ApiErrorException $e) {
+    $sessionmatches = false;
+}
+if (!$sessionmatches) {
+    redirect(new moodle_url('/'), get_string('sessionmismatch', 'paygw_stripe'), null,
+        \core\output\notification::NOTIFY_ERROR);
+}
+
 $stripehelper->save_payment_status($sessionid);
 
 $sessionmode = $stripehelper->get_sessionmode($sessionid);
@@ -47,22 +59,26 @@ $sessionmode = $stripehelper->get_sessionmode($sessionid);
 if ($sessionmode === 'subscription') {
     $subscriptionstatus = $stripehelper->get_subscription_status($sessionid);
     if (!in_array($subscriptionstatus, ['incomplete', 'incomplete_expired', 'canceled'])) {
-        $stripehelper->deliver_course($component, $paymentarea, $itemid, $USER->id);
+        $stripehelper->deliver_course_once($component, $paymentarea, $itemid, $USER->id);
 
-        // Find redirection.
-        $url = helper::get_success_url($component, $paymentarea, $itemid);
+        // Find redirection ("My courses" when the course is hidden, e.g. a subscription course).
+        $url = stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id);
         redirect($url, get_string('subscriptionsuccessful', 'paygw_stripe'), 0, 'success');
     } else {
         redirect(new moodle_url('/'), get_string('subscriptionerror', 'paygw_stripe'));
     }
 } else if ($sessionmode === 'payment') {
     if ($stripehelper->is_paid($sessionid)) {
-        $stripehelper->deliver_course($component, $paymentarea, $itemid, $USER->id);
+        $stripehelper->deliver_course_once($component, $paymentarea, $itemid, $USER->id);
 
         // Find redirection.
-        $url = helper::get_success_url($component, $paymentarea, $itemid);
+        $url = stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id);
         redirect($url, get_string('paymentsuccessful', 'paygw_stripe'), 0, 'success');
     } else if ($stripehelper->is_pending($sessionid)) {
         redirect(new moodle_url('/'), get_string('paymentpending', 'paygw_stripe'));
     }
 }
+
+// Neither paid nor pending (e.g. the session was left unpaid): say so instead of showing an empty page.
+$url = stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id, false);
+redirect($url, get_string('paymentnotcompleted', 'paygw_stripe'), null, \core\output\notification::NOTIFY_WARNING);

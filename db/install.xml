@@ -68,6 +68,9 @@
         <FIELD NAME="status" TYPE="char" LENGTH="100" NOTNULL="false" SEQUENCE="false" COMMENT="Session status"/>
         <FIELD NAME="productid" TYPE="char" LENGTH="100" NOTNULL="true" SEQUENCE="false" COMMENT="Stripe product ID"/>
         <FIELD NAME="priceid" TYPE="char" LENGTH="100" NOTNULL="true" SEQUENCE="false" COMMENT="Stripe price ID"/>
+        <FIELD NAME="component" TYPE="char" LENGTH="100" NOTNULL="false" SEQUENCE="false" COMMENT="Payment item component (e.g. enrol_fee)"/>
+        <FIELD NAME="paymentarea" TYPE="char" LENGTH="100" NOTNULL="false" SEQUENCE="false" COMMENT="Payment item area"/>
+        <FIELD NAME="itemid" TYPE="int" LENGTH="10" NOTNULL="false" SEQUENCE="false" COMMENT="Payment item ID (e.g. enrol instance ID)"/>
       </FIELDS>
       <KEYS>
         <KEY NAME="primary" TYPE="primary" FIELDS="id"/>

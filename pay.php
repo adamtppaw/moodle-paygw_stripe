@@ -36,18 +36,39 @@ $itemid = required_param('itemid', PARAM_INT);
 $description = urldecode(required_param('description', PARAM_TEXT));
 $sessionid = optional_param('session_id', null, PARAM_TEXT);
 
+$config = (object) helper::get_gateway_configuration($component, $paymentarea, $itemid, 'stripe');
+$issubscription = isset($config->type) && $config->type === 'subscription';
+
 // A direct link to this page bypasses the checks Moodle does before showing the "Buy" button,
 // so refuse payment for courses that are hidden or no longer open for enrolment.
+// Hidden courses can still be bought with a subscription account (subscription plans).
+// A user who already has active access through this instance cannot pay for it again
+// (e.g. a direct link shown to enrolled users as well).
+$subscriptionsurl = new moodle_url('/payment/gateway/stripe/subscriptions.php');
+// A user with a running subscription cannot buy another one (or the same plan again); the
+// subscriptions page shows its state and lets the user resume a subscription cancelled at the
+// end of the period.
+if ($issubscription && stripe_helper::get_running_subscription($USER->id)) {
+    redirect($subscriptionsurl, get_string('purchaseunavailable_alreadysubscribed', 'paygw_stripe'), null,
+        \core\output\notification::NOTIFY_WARNING);
+}
 if ($instance = stripe_helper::resolve_enrol_instance($component, $itemid)) {
-    if ($reason = stripe_helper::get_purchase_unavailable_reason($instance)) {
-        $returnurl = $reason === 'purchaseunavailable_coursehidden'
-            ? new moodle_url('/')
-            : new moodle_url('/course/view.php', ['id' => $instance->courseid]);
+    if ($reason = stripe_helper::get_purchase_unavailable_reason($instance, $issubscription, $USER->id)) {
+        if ($reason === 'purchaseunavailable_coursehidden') {
+            $returnurl = new moodle_url('/');
+        } else if ($reason === 'purchaseunavailable_alreadyenrolled' && $issubscription) {
+            $returnurl = $subscriptionsurl;
+        } else if ($reason === 'purchaseunavailable_alreadyenrolled') {
+            $returnurl = stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id);
+        } else {
+            // The course page, or the home page when the user cannot open the course (e.g. a hidden
+            // subscription course withdrawn from sale) instead of Moodle's "course hidden" error.
+            $returnurl = stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id, false);
+        }
         redirect($returnurl, get_string($reason, 'paygw_stripe'), null, \core\output\notification::NOTIFY_WARNING);
     }
 }
 
-$config = (object) helper::get_gateway_configuration($component, $paymentarea, $itemid, 'stripe');
 $payable = helper::get_payable($component, $paymentarea, $itemid);
 $surcharge = helper::get_gateway_surcharge('stripe');
 

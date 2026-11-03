@@ -232,5 +232,34 @@ function xmldb_paygw_stripe_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2023100500, 'paygw', 'stripe');
     }
 
+    if ($oldversion < 2026110100) {
+        // A subscription stores the payment item it was bought for. Until now the item was found only
+        // through the product mapping (paygw_stripe_products), which is removed when the product is
+        // archived in Stripe; such subscriptions could not be listed, cancelled or unenrolled.
+        $table = new xmldb_table('paygw_stripe_subscriptions');
+        $fields = [
+            new xmldb_field('component', XMLDB_TYPE_CHAR, '100', null, null, null, null, 'priceid'),
+            new xmldb_field('paymentarea', XMLDB_TYPE_CHAR, '100', null, null, null, null, 'component'),
+            new xmldb_field('itemid', XMLDB_TYPE_INTEGER, '10', null, null, null, null, 'paymentarea'),
+        ];
+        foreach ($fields as $field) {
+            if (!$dbman->field_exists($table, $field)) {
+                $dbman->add_field($table, $field);
+            }
+        }
+        // Fill in existing subscriptions from the product mapping, where it still exists.
+        $subs = $DB->get_records_select('paygw_stripe_subscriptions', 'component IS NULL');
+        foreach ($subs as $sub) {
+            $products = $DB->get_records('paygw_stripe_products', ['productid' => $sub->productid], 'id DESC', '*', 0, 1);
+            if ($product = reset($products)) {
+                $sub->component = $product->component;
+                $sub->paymentarea = $product->paymentarea;
+                $sub->itemid = $product->itemid;
+                $DB->update_record('paygw_stripe_subscriptions', $sub);
+            }
+        }
+        upgrade_plugin_savepoint(true, 2026110100, 'paygw', 'stripe');
+    }
+
     return true;
 }
