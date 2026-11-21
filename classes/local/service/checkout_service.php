@@ -156,12 +156,14 @@ class checkout_service {
                 ],
             ],
             'mode' => 'payment',
-            'line_items' => [[
+            // WSB Merito: in manual tax mode the fixed Stripe Tax Rate (e.g. "zw") goes on the line item.
+            'line_items' => [array_filter([
                 'price' => $price,
                 'quantity' => 1,
-            ]],
+                'tax_rates' => ($taxrate = wsb_tax::manual_rate($config)) ? [$taxrate] : null,
+            ])],
             'automatic_tax' => [
-                'enabled' => $config->enableautomatictax == 1,
+                'enabled' => wsb_tax::is_automatic($config),
             ],
             // WSB Merito: an absent setting (configuration saved before the option existed) means on – invoices with
             // the billing address and tax ID for every purchase, as in the WSB version (MER-36, MER-39).

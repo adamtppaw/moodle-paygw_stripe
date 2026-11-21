@@ -217,7 +217,7 @@ class product_pricing_service {
                 $currency,
                 $product->id,
                 $unitamount,
-                $config->enableautomatictax == 1,
+                wsb_tax::is_automatic($config),
                 $config->defaulttaxbehavior,
                 $subscription
             );
@@ -237,13 +237,13 @@ class product_pricing_service {
                     $currency,
                     $product->id,
                     $unitamount,
-                    $config->enableautomatictax == 1,
+                    wsb_tax::is_automatic($config),
                     $config->defaulttaxbehavior,
                     $subscription
                 );
             }
             // Set tax behavior if not set already.
-            if ($config->enableautomatictax == 1 && (!isset($price->tax_behavior) || $price->tax_behavior === 'unspecified')) {
+            if (wsb_tax::is_automatic($config) && (!isset($price->tax_behavior) || $price->tax_behavior === 'unspecified')) {
                 // The setting is "defaulttaxbehavior"; "tax_behavior" is not a gateway setting, so an exclusive default
                 // was never applied to existing prices.
                 $behavior = $config->defaulttaxbehavior ?? 'inclusive';

@@ -314,6 +314,11 @@ class subscription_service {
         $subscriptiondata = [
             'metadata' => wsb_metadata::payment($buyer, $component, $paymentarea, $itemid),
         ];
+        // WSB Merito: in manual tax mode the fixed Stripe Tax Rate (e.g. "zw") applies to every invoice of the
+        // subscription – subscription_data.default_tax_rates (line_items.tax_rates is for one-time payments).
+        if ($taxrate = wsb_tax::manual_rate($config)) {
+            $subscriptiondata['default_tax_rates'] = [$taxrate];
+        }
         if ($config->anchorbilling) {
             $subscriptiondata['billing_cycle_anchor'] = $this->get_anchor_billing_dates($config)->getTimestamp();
             if ($config->firstintervalfree) {
@@ -339,7 +344,7 @@ class subscription_service {
                 'quantity' => 1,
             ]],
             'automatic_tax' => [
-                'enabled' => $config->enableautomatictax == 1,
+                'enabled' => wsb_tax::is_automatic($config),
             ],
             // WSB Merito: absent setting = on (see checkout_service); tax ID for company invoices.
             'billing_address_collection' => ($config->collectbillingaddress ?? 1) == 1 ? 'required' : 'auto',
