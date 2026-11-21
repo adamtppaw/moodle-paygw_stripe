@@ -260,10 +260,12 @@ final class subscription_service_test extends stripe_testcase {
             'priceid' => 'price_cancel_1',
         ]);
 
+        // WSB Merito: the state is always read first, so an already ended subscription is not cancelled again.
         $subscriptions = $this->mock_stripe_service('subscriptions', SubscriptionService::class);
-        $subscriptions->expects($this->once())->method($cancelstripe ? 'cancel' : 'retrieve')->with('sub_cancel_1')
+        $subscriptions->expects($this->once())->method('retrieve')->with('sub_cancel_1')
+            ->willReturn(Subscription::constructFrom(['id' => 'sub_cancel_1', 'status' => $cancelstripe ? 'active' : 'canceled']));
+        $subscriptions->expects($cancelstripe ? $this->once() : $this->never())->method('cancel')->with('sub_cancel_1')
             ->willReturn(Subscription::constructFrom(['id' => 'sub_cancel_1', 'status' => 'canceled']));
-        $subscriptions->expects($this->never())->method($cancelstripe ? 'retrieve' : 'cancel');
         $service = new subscription_service($this->client);
 
         $moodlesub = new subscription_model(
@@ -280,6 +282,83 @@ final class subscription_service_test extends stripe_testcase {
         $updated = $DB->get_record('paygw_stripe_subscriptions', ['id' => $subid], '*', MUST_EXIST);
         $this->assertSame('canceled', $updated->status);
         $this->assertGreaterThan(0, $productid);
+    }
+
+    /**
+     * Store a subscription with its payment item and enrol the user (WSB Merito).
+     *
+     * @return array [user, enrol instance, subscription model]
+     */
+    private function enrolled_subscription(): array {
+        global $DB;
+        set_config('enrol_plugins_enabled', 'manual,fee');
+        $user = $this->getDataGenerator()->create_user();
+        $course = $this->getDataGenerator()->create_course();
+        $plugin = enrol_get_plugin('fee');
+        $instance = $DB->get_record('enrol', ['id' => $plugin->add_instance($course, ['cost' => 10, 'currency' => 'PLN'])]);
+        $plugin->enrol_user($instance, $user->id);
+        $id = $DB->insert_record('paygw_stripe_subscriptions', (object) ['userid' => $user->id, 'subscriptionid' => 'sub_wsb',
+            'customerid' => 'cus_wsb', 'status' => 'active', 'productid' => 'prod_wsb', 'priceid' => 'price_wsb',
+            'component' => 'enrol_fee', 'paymentarea' => 'fee', 'itemid' => $instance->id]);
+        return [$user, $instance, subscription_model::from_record($DB->get_record('paygw_stripe_subscriptions', ['id' => $id]))];
+    }
+
+    /**
+     * A subscription missing in Stripe is not cancelled again; Moodle is synced and the user unenrolled (WSB Merito).
+     */
+    public function test_cancel_subscription_missing_in_stripe_unenrols(): void {
+        global $DB;
+        [$user, $instance, $moodlesub] = $this->enrolled_subscription();
+        $subscriptions = $this->mock_stripe_service('subscriptions', SubscriptionService::class);
+        $subscriptions->method('retrieve')->willThrowException(
+            \Stripe\Exception\InvalidRequestException::factory('No such subscription', 404, null, null, null, 'resource_missing')
+        );
+        $subscriptions->expects($this->never())->method('cancel');
+
+        $this->assertFalse((new subscription_service($this->client))->cancel_subscription($moodlesub));
+        $this->assertDebuggingCalled();
+        $this->assertSame('canceled', $DB->get_field('paygw_stripe_subscriptions', 'status', ['id' => $moodlesub->id]));
+        $this->assertFalse($DB->record_exists('user_enrolments', ['enrolid' => $instance->id, 'userid' => $user->id]));
+    }
+
+    /**
+     * Cancelling from "My subscriptions" keeps access until the end of the paid period (WSB Merito).
+     */
+    public function test_schedule_cancellation_keeps_access_until_period_end(): void {
+        global $DB;
+        [$user, $instance, $moodlesub] = $this->enrolled_subscription();
+        $end = time() + 10 * DAYSECS;
+        $active = fn(bool $atend) => Subscription::constructFrom(['id' => 'sub_wsb', 'status' => 'active',
+            'cancel_at_period_end' => $atend, 'items' => ['object' => 'list', 'data' => [['id' => 'si_wsb',
+            'object' => 'subscription_item', 'current_period_end' => $end]]]]);
+        $subscriptions = $this->mock_stripe_service('subscriptions', SubscriptionService::class);
+        $subscriptions->method('retrieve')->willReturn($active(false));
+        $subscriptions->expects($this->once())->method('update')->with('sub_wsb', ['cancel_at_period_end' => true])
+            ->willReturn($active(true));
+        $subscriptions->expects($this->never())->method('cancel');
+
+        $this->assertSame(['scheduled', $end], (new subscription_service($this->client))->schedule_cancellation($moodlesub));
+        $this->assertTrue($DB->record_exists('user_enrolments', ['enrolid' => $instance->id, 'userid' => $user->id]));
+    }
+
+    /**
+     * Reconciliation catches up on a lost customer.subscription.deleted; other statuses are only stored (WSB Merito).
+     */
+    public function test_reconcile_subscription(): void {
+        global $DB;
+        [$user, $instance, $moodlesub] = $this->enrolled_subscription();
+        $subscriptions = $this->mock_stripe_service('subscriptions', SubscriptionService::class);
+        $subscriptions->method('retrieve')->willReturnOnConsecutiveCalls(
+            Subscription::constructFrom(['id' => 'sub_wsb', 'status' => 'past_due']),
+            Subscription::constructFrom(['id' => 'sub_wsb', 'status' => 'canceled']),
+            Subscription::constructFrom(['id' => 'sub_wsb', 'status' => 'canceled'])
+        );
+        $service = new subscription_service($this->client);
+
+        $this->assertSame(['updated', 'past_due'], $service->reconcile_subscription($moodlesub));
+        $this->assertTrue($DB->record_exists('user_enrolments', ['enrolid' => $instance->id, 'userid' => $user->id]));
+        $this->assertSame(['ended', 'canceled'], $service->reconcile_subscription($moodlesub));
+        $this->assertFalse($DB->record_exists('user_enrolments', ['enrolid' => $instance->id, 'userid' => $user->id]));
     }
 
     /**

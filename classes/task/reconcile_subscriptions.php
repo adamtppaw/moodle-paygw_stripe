@@ -17,7 +17,9 @@
 namespace paygw_stripe\task;
 
 use core_payment\helper;
-use paygw_stripe\stripe_helper;
+use paygw_stripe\local\model\subscription;
+use paygw_stripe\local\service\stripe_service_factory;
+use paygw_stripe\local\service\wsb_purchase_guard;
 
 /**
  * Daily check of running subscriptions against Stripe (safety net for lost webhooks).
@@ -63,7 +65,7 @@ class reconcile_subscriptions extends \core\task\scheduled_task {
         $helpers = [];
         foreach ($records as $moodlesub) {
             $label = "subscription {$moodlesub->subscriptionid} (record {$moodlesub->id}, user {$moodlesub->userid})";
-            $item = stripe_helper::get_subscription_item($moodlesub);
+            $item = wsb_purchase_guard::get_subscription_item($moodlesub);
             if (!$item) {
                 mtrace("  SKIPPED $label: no payment item (plan) for this subscription.");
                 $counts['skipped']++;
@@ -80,10 +82,10 @@ class reconcile_subscriptions extends \core\task\scheduled_task {
             }
             $key = $config->secretkey ?? '';
             if (!isset($helpers[$key])) {
-                $helpers[$key] = new stripe_helper($config->apikey ?? '', $key);
+                $helpers[$key] = (new stripe_service_factory($config->apikey ?? '', $key))->subscription_service();
             }
             try {
-                [$outcome, $status] = $helpers[$key]->reconcile_subscription($moodlesub);
+                [$outcome, $status] = $helpers[$key]->reconcile_subscription(subscription::from_record($moodlesub));
             } catch (\Throwable $e) {
                 mtrace("  ERROR $label: " . $e->getMessage());
                 $counts['error']++;

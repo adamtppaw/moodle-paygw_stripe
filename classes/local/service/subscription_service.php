@@ -201,7 +201,11 @@ class subscription_service {
                 if (!helper::deliver_order($component, $paymentarea, $itemid, $paymentid, $userid)) {
                     throw new \moodle_exception('subscriptiondeliveryfailed', 'paygw_stripe');
                 }
-                $this->subscriptionrepository->save($record->with_delivered());
+                $saved = $this->subscriptionrepository->save($record->with_delivered());
+                // WSB Merito: store the payment item with the subscription – the product mapping is not unique
+                // (one Stripe product can serve several enrolment instances) and can be removed later.
+                $DB->update_record('paygw_stripe_subscriptions', (object) ['id' => $saved->id, 'component' => $component,
+                    'paymentarea' => $paymentarea, 'itemid' => $itemid]);
                 $transaction->allow_commit();
             } catch (\Throwable $e) {
                 $transaction->rollback($e);
@@ -389,31 +393,186 @@ class subscription_service {
      * Cancel a given subscription.
      * Unenrol the user from a course if that was the product chosen.
      *
+     * WSB Merito: the current state is read from Stripe first. A subscription that is already cancelled in
+     * Stripe (Dashboard, customer portal, failed renewals with a lost webhook) or no longer exists there is not
+     * cancelled again – that call threw ("No such subscription") and left Moodle out of sync. In both cases the
+     * record gets the Stripe status ("canceled" for a missing one) and the user is unenrolled through the
+     * instance's own enrolment plugin (any enrol_*, e.g. enrol_feestripe), so access matches what is paid for.
+     *
      * @param subscription $moodlesub Moodle subscription record
      * @param bool $cancelstripe Attempt to cancel subscription within Stripe
-     * @return void
-     * @throws ApiErrorException
+     * @return bool True if this call cancelled the subscription in Stripe.
+     * @throws ApiErrorException Errors other than a missing subscription
      * @throws \coding_exception
      * @throws \dml_exception
      */
-    public function cancel_subscription(subscription $moodlesub, bool $cancelstripe = true) {
+    public function cancel_subscription(subscription $moodlesub, bool $cancelstripe = true): bool {
         global $DB;
 
-        if ($cancelstripe) {
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
+        $cancelled = false;
+        if ($cancelstripe && $subscription && $subscription->status !== 'canceled') {
             $subscription = $this->stripe->subscriptions->cancel($moodlesub->subscriptionid);
-        } else {
-            $subscription = $this->stripe->subscriptions->retrieve($moodlesub->subscriptionid);
+            $cancelled = true;
         }
+        $status = $subscription ? $subscription->status : 'canceled';
 
         $msub = $this->subscriptionrepository->find_by_subscriptionid($moodlesub->subscriptionid);
-        $this->subscriptionrepository->update_status($msub->id, $subscription->status);
+        $this->subscriptionrepository->update_status($msub->id, $status);
+        if ($status !== 'canceled') {
+            return $cancelled;
+        }
 
-        $product = $this->productrepository->find_by_productid($moodlesub->productid);
-        if ($product->component == 'enrol_fee') {
-            // A course was the product. Let's unenrol the user.
-            $instance = $DB->get_record('enrol', ['enrol' => 'fee', 'id' => $product->itemid], '*', MUST_EXIST);
-            $plugin = enrol_get_plugin('fee');
-            $plugin->unenrol_user($instance, $moodlesub->userid);
+        $record = $DB->get_record('paygw_stripe_subscriptions', ['id' => $msub->id]);
+        $item = wsb_purchase_guard::get_subscription_item($record);
+        if (!$item) {
+            debugging('paygw_stripe: no payment item for subscription ' . $moodlesub->subscriptionid . ', user ' .
+                $moodlesub->userid . ' was not unenrolled.', DEBUG_DEVELOPER);
+            return $cancelled;
+        }
+        // Unenrol through the instance's own plugin: enrol_plugin::unenrol_user() refuses an instance of another plugin.
+        if ($instance = wsb_metadata::resolve_enrol_instance($item->component, $item->itemid)) {
+            if ($plugin = enrol_get_plugin($instance->enrol)) {
+                $plugin->unenrol_user($instance, $moodlesub->userid);
+            }
+        } else if (strpos($item->component, 'enrol_') === 0) {
+            debugging('paygw_stripe: enrol instance ' . $item->itemid . ' (' . $item->component . ') not found, user ' .
+                $moodlesub->userid . ' was not unenrolled.', DEBUG_DEVELOPER);
+        }
+        return $cancelled;
+    }
+
+    /**
+     * Compare one stored subscription with Stripe and catch up on a change that Moodle missed (WSB Merito).
+     *
+     * Used by the daily reconcile_subscriptions task as a safety net for lost webhooks. Ended in Stripe: the same
+     * handling as the webhook (status and unenrolment). Another status: only stored (access never depends on it).
+     * Missing in Stripe: nothing changes – a real subscription is never deleted, so this means wrong API keys or a
+     * broken record, and unenrolling would be a guess. Never grants access.
+     *
+     * @param subscription $moodlesub
+     * @return array{0: string, 1: string|null} Outcome ('ended', 'updated', 'unchanged' or 'missing') and the Stripe status.
+     * @throws ApiErrorException Errors other than a missing subscription
+     */
+    public function reconcile_subscription(subscription $moodlesub): array {
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
+        if (!$subscription) {
+            return ['missing', null];
+        }
+        if ($subscription->status === 'canceled') {
+            $this->cancel_subscription($moodlesub, false);
+            return ['ended', 'canceled'];
+        }
+        if ($subscription->status !== $moodlesub->status) {
+            $this->subscriptionrepository->update_status($moodlesub->id, $subscription->status);
+            return ['updated', $subscription->status];
+        }
+        return ['unchanged', $subscription->status];
+    }
+
+    /**
+     * Cancel at the end of the paid billing period (WSB Merito; what the user does on "My subscriptions").
+     *
+     * Stripe keeps the subscription active until the period ends (cancel_at_period_end) and does not charge
+     * again; then it sends customer.subscription.deleted and the webhook unenrols the user. Until then the user
+     * keeps access and can resume. A subscription that is not being paid for (incomplete, unpaid) is cancelled
+     * immediately; one already ended or missing in Stripe is only synced.
+     *
+     * @param subscription $moodlesub
+     * @return array{0: string, 1: int|null} Outcome ('scheduled', 'cancelled' or 'alreadyended') and, for
+     *     'scheduled', when access ends.
+     * @throws ApiErrorException
+     */
+    public function schedule_cancellation(subscription $moodlesub): array {
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
+        if (!$subscription || in_array($subscription->status, ['canceled', 'incomplete_expired'])) {
+            $this->cancel_subscription($moodlesub, false);
+            return ['alreadyended', null];
+        }
+        if (in_array($subscription->status, ['incomplete', 'unpaid'])) {
+            $this->cancel_subscription($moodlesub);
+            return ['cancelled', null];
+        }
+        if (empty($subscription->cancel_at_period_end)) {
+            $subscription = $this->stripe->subscriptions->update($moodlesub->subscriptionid, ['cancel_at_period_end' => true]);
+        }
+        $this->subscriptionrepository->update_status($moodlesub->id, $subscription->status);
+        return ['scheduled', self::period_end($subscription)];
+    }
+
+    /**
+     * Undo a cancellation scheduled for the end of the period (WSB Merito). An ended subscription cannot be resumed.
+     *
+     * @param subscription $moodlesub
+     * @return int|null Next renewal, or null when the subscription cannot be resumed.
+     * @throws ApiErrorException
+     */
+    public function resume_subscription(subscription $moodlesub): ?int {
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
+        if (!$subscription || in_array($subscription->status, ['canceled', 'incomplete_expired', 'incomplete', 'unpaid'])) {
+            return null;
+        }
+        if (!empty($subscription->cancel_at_period_end)) {
+            $subscription = $this->stripe->subscriptions->update($moodlesub->subscriptionid, ['cancel_at_period_end' => false]);
+        }
+        $this->subscriptionrepository->update_status($moodlesub->id, $subscription->status);
+        return self::period_end($subscription);
+    }
+
+    /**
+     * End of the current paid period, i.e. until when a cancelled subscription keeps access (WSB Merito).
+     *
+     * @param subscription $moodlesub
+     * @return int|null Null when there is no paid period to keep (ended, missing, incomplete or unpaid).
+     * @throws ApiErrorException
+     */
+    public function get_current_period_end(subscription $moodlesub): ?int {
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
+        if (!$subscription || in_array($subscription->status, ['canceled', 'incomplete_expired', 'incomplete', 'unpaid'])) {
+            return null;
+        }
+        return self::period_end($subscription);
+    }
+
+    /**
+     * End of the current billing period. Since API 2025-03-31 it is on the subscription items; older versions had
+     * it on the subscription.
+     *
+     * @param \Stripe\Subscription $subscription
+     * @return int|null
+     */
+    public static function period_end(\Stripe\Subscription $subscription): ?int {
+        $item = $subscription->items->data[0] ?? null;
+        $end = $item->current_period_end ?? ($subscription->current_period_end ?? null);
+        return $end ? (int) $end : null;
+    }
+
+    /**
+     * Format a date for subscription messages (day, month and year in the user's language).
+     *
+     * @param int $timestamp
+     * @return string
+     */
+    public static function format_subscription_date(int $timestamp): string {
+        return userdate($timestamp, get_string('strftimedate', 'langconfig'));
+    }
+
+    /**
+     * Retrieve a subscription from Stripe, or null when it no longer exists there.
+     *
+     * @param string $subscriptionid
+     * @return \Stripe\Subscription|null
+     * @throws ApiErrorException Errors other than a missing subscription
+     */
+    private function retrieve_subscription_or_null(string $subscriptionid): ?\Stripe\Subscription {
+        try {
+            return $this->stripe->subscriptions->retrieve($subscriptionid);
+        } catch (\Stripe\Exception\InvalidRequestException $e) {
+            if ($e->getStripeCode() !== 'resource_missing') {
+                throw $e;
+            }
+            debugging('paygw_stripe: subscription ' . $subscriptionid . ' not found in Stripe.', DEBUG_DEVELOPER);
+            return null;
         }
     }
 
@@ -457,11 +616,33 @@ class subscription_service {
                     ['action' => 'portal', 'subscriptionid' => $moodlesub->id]
                 );
 
+            $fee = $this->get_localised_cost($price->unit_amount, $price->currency) . ' / ' .
+                get_string('customsubscriptioninterval:' . $price->recurring->interval, 'paygw_stripe');
+            // WSB Merito: cancelled at the end of the paid period – still active but will not renew. Show when access
+            // ends and offer to resume instead of cancelling again.
+            if ($subscription->status !== 'canceled' && !empty($subscription->cancel_at_period_end)) {
+                $resumelink = new moodle_url(
+                    '/payment/gateway/stripe/subscriptions.php',
+                    ['action' => 'resume', 'subscriptionid' => $moodlesub->id, 'sesskey' => sesskey()]
+                );
+                return [
+                    s($product->name),
+                    $fee,
+                    '–',
+                    get_string(
+                        'subscriptionendson',
+                        'paygw_stripe',
+                        self::format_subscription_date(self::period_end($subscription))
+                    ),
+                    '',
+                    \html_writer::link($resumelink, get_string('resumesubscription', 'paygw_stripe')),
+                ];
+            }
+
             return [
                 s($product->name),
-                $this->get_localised_cost($price->unit_amount, $price->currency) . ' / ' .
-                get_string('customsubscriptioninterval:' . $price->recurring->interval, 'paygw_stripe'),
-                userdate($subscription->items->data[0]->current_period_end),
+                $fee,
+                $subscription->status !== 'canceled' ? userdate(self::period_end($subscription)) : '–',
                 get_string('subscriptionstatus:' . $moodlesub->status, 'paygw_stripe'),
                 $moodlesub->status != 'canceled' ?
                     \html_writer::link($portallink, get_string('updatepaymentmethod', 'paygw_stripe')) : '',
