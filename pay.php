@@ -33,9 +33,21 @@ use paygw_stripe\stripe_helper;
 require_once(__DIR__ . '/../../../config.php');
 require_once(__DIR__ . '/.extlib/stripe-php/init.php');
 
-global $PAGE, $OUTPUT, $USER;
+global $PAGE, $OUTPUT, $USER, $SESSION;
 
-require_login();
+require_login(null, false);
+// A guest (automatic guest login or "Log in as a guest") cannot buy: the guest account has no e-mail address of its
+// own (root@localhost by default), which Stripe rejects when the customer is created. Ask for a real login and come
+// back to the same purchase link.
+if (isguestuser()) {
+    $SESSION->wantsurl = (new moodle_url('/payment/gateway/stripe/pay.php', array_filter([
+        'component' => optional_param('component', '', PARAM_ALPHANUMEXT),
+        'paymentarea' => optional_param('paymentarea', '', PARAM_ALPHANUMEXT),
+        'itemid' => optional_param('itemid', 0, PARAM_INT),
+        'description' => optional_param('description', '', PARAM_TEXT),
+    ])))->out(false);
+    redirect(get_login_url());
+}
 
 $component = required_param('component', PARAM_ALPHANUMEXT);
 $paymentarea = required_param('paymentarea', PARAM_ALPHANUMEXT);
