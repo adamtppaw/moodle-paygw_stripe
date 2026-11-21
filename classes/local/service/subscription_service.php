@@ -291,10 +291,13 @@ class subscription_service {
             $pricedetails
         );
 
-        if (!$customer = $this->customerservice->get_customer((int)$USER->id)) {
-            $customer = $this->customerservice->create_customer($USER);
+        // WSB Merito: profile data from the database, not the session copy in $USER – changes made while the
+        // buyer is logged in reach Stripe right away.
+        $buyer = \core_user::get_user($USER->id, '*', MUST_EXIST);
+        if (!$customer = $this->customerservice->get_customer((int)$buyer->id)) {
+            $customer = $this->customerservice->create_customer($buyer);
         } else {
-            $customer = $this->customerservice->update_customer_details($customer, $USER);
+            $customer = $this->customerservice->update_customer_details($customer, $buyer);
         }
 
         $stripelocale = $this->localeservice->get_stripe_locale_for_user($USER);
@@ -305,15 +308,7 @@ class subscription_service {
         }
 
         $subscriptiondata = [
-            'metadata' => [
-                'userid' => $USER->id,
-                'username' => $USER->username,
-                'firstname' => $USER->firstname,
-                'lastname' => $USER->lastname,
-                'component' => $component,
-                'paymentarea' => $paymentarea,
-                'itemid' => $itemid,
-            ],
+            'metadata' => wsb_metadata::payment($buyer, $component, $paymentarea, $itemid),
         ];
         if ($config->anchorbilling) {
             $subscriptiondata['billing_cycle_anchor'] = $this->get_anchor_billing_dates($config)->getTimestamp();
@@ -346,15 +341,7 @@ class subscription_service {
             'allow_promotion_codes' => $config->allowpromotioncodes == 1,
             'subscription_data' => $subscriptiondata,
             'customer' => $customer->id,
-            'metadata' => [
-                'userid' => $USER->id,
-                'username' => $USER->username,
-                'firstname' => $USER->firstname,
-                'lastname' => $USER->lastname,
-                'component' => $component,
-                'paymentarea' => $paymentarea,
-                'itemid' => $itemid,
-            ],
+            'metadata' => wsb_metadata::payment($buyer, $component, $paymentarea, $itemid),
             'customer_update' => [
                 'address' => 'auto',
             ],

@@ -126,10 +126,13 @@ class checkout_service {
             $itemid
         );
 
-        if (!$customer = $this->customerservice->get_customer((int)$USER->id)) {
-            $customer = $this->customerservice->create_customer($USER);
+        // WSB Merito: profile data from the database, not the session copy in $USER – changes made while the
+        // buyer is logged in reach Stripe right away.
+        $buyer = \core_user::get_user($USER->id, '*', MUST_EXIST);
+        if (!$customer = $this->customerservice->get_customer((int)$buyer->id)) {
+            $customer = $this->customerservice->create_customer($buyer);
         } else {
-            $customer = $this->customerservice->update_customer_details($customer, $USER);
+            $customer = $this->customerservice->update_customer_details($customer, $buyer);
         }
 
         $stripelocale = $this->localeservice->get_stripe_locale_for_user($USER);
@@ -171,25 +174,9 @@ class checkout_service {
                 ],
             ],
             'customer' => $customer->id,
-            'metadata' => [
-                'userid' => $USER->id,
-                'username' => $USER->username,
-                'firstname' => $USER->firstname,
-                'lastname' => $USER->lastname,
-                'component' => $component,
-                'paymentarea' => $paymentarea,
-                'itemid' => $itemid,
-            ],
+            'metadata' => wsb_metadata::payment($buyer, $component, $paymentarea, $itemid),
             'payment_intent_data' => [
-                'metadata' => [
-                    'userid' => $USER->id,
-                    'username' => $USER->username,
-                    'firstname' => $USER->firstname,
-                    'lastname' => $USER->lastname,
-                    'component' => $component,
-                    'paymentarea' => $paymentarea,
-                    'itemid' => $itemid,
-                ],
+                'metadata' => wsb_metadata::payment($buyer, $component, $paymentarea, $itemid),
             ],
             'allow_promotion_codes' => $config->allowpromotioncodes == 1,
             'customer_update' => [

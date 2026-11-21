@@ -70,7 +70,14 @@ class product_pricing_service {
             $record = $this->productrepository->get_product_by_parts($component, $paymentarea, $itemid)
         ) {
             try {
-                return $this->stripe->products->retrieve($record->productid);
+                $product = $this->stripe->products->retrieve($record->productid);
+                // WSB Merito: an archived (inactive) product cannot get new prices nor be sold in Checkout.
+                // Treat it as missing, so a new active product is created instead of failing the payment.
+                if (empty($product->active)) {
+                    $this->productrepository->delete_product_by_parts($component, $paymentarea, $itemid);
+                    return null;
+                }
+                return $product;
             } catch (ApiErrorException $e) {
                 // Product exists in Moodle but not in stripe, possibly the keys were switched.
                 // Delete product for creation later.
@@ -93,9 +100,11 @@ class product_pricing_service {
      * @throws \dml_exception
      */
     public function create_product(string $description, string $component, string $paymentarea, string $itemid): Product {
-        $description = purchase_description::get($component, $paymentarea, (int)$itemid);
+        $description = wsb_metadata::product_name($component, $itemid,
+            purchase_description::get($component, $paymentarea, (int)$itemid));
         $product = $this->stripe->products->create([
             'name' => $description,
+            'metadata' => wsb_metadata::product($component, $paymentarea, $itemid),
         ]);
 
         $record = new paygw_product(
@@ -197,7 +206,8 @@ class product_pricing_service {
         string $itemid,
         ?array $subscription = null
     ) {
-        $description = purchase_description::get($component, $paymentarea, (int)$itemid);
+        $description = wsb_metadata::product_name($component, $itemid,
+            purchase_description::get($component, $paymentarea, (int)$itemid));
         $unitamount = $this->get_unit_amount($cost, $payable->get_currency());
         $currency = strtolower($payable->get_currency());
 
@@ -244,6 +254,10 @@ class product_pricing_service {
             $product->name = $description;
             $product = $this->stripe->products->update($product->id, ['name' => $description]);
         }
+        // WSB Merito: keep moodle_* metadata of the product current (only when something is missing or stale).
+        if ($metadata = wsb_metadata::product_update($product->metadata ?? null, $component, $paymentarea, $itemid)) {
+            $product = $this->stripe->products->update($product->id, ['metadata' => $metadata]);
+        }
 
         return [$product, $price];
     }
@@ -257,8 +271,9 @@ class product_pricing_service {
      */
     public function get_unit_amount(float $cost, string $currency): float {
         if (in_array(strtoupper($currency), gateway::get_zero_decimal_currencies())) {
-            return $cost;
+            return round($cost);
         }
-        return $cost * 100;
+        // WSB Merito: whole minor units – 19.99 * 100 is 1998.9999…, which would create a new price on every purchase.
+        return round($cost * 100);
     }
 }
