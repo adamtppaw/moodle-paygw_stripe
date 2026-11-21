@@ -67,13 +67,20 @@ class webhook_service {
             return null;
         }
 
-        if ($webhook = $this->stripe->webhookEndpoints->retrieve($record->webhookid)) {
-            // Webhook still exists, lets set the secret and return.
-            $webhook->secret = $record->secret;
-            return $webhook;
+        try {
+            $webhook = $this->stripe->webhookEndpoints->retrieve($record->webhookid);
+        } catch (\Stripe\Exception\InvalidRequestException $e) {
+            if ($e->getHttpStatus() !== 404) {
+                throw $e;
+            }
+            // The endpoint was deleted in Stripe (e.g. in the Dashboard): forget it, so that create_webhook()
+            // registers a new one instead of every purchase failing.
+            $this->webhookrepository->delete($record);
+            return null;
         }
-
-        return null;
+        // Webhook still exists, lets set the secret and return.
+        $webhook->secret = $record->secret;
+        return $webhook;
     }
 
     /**

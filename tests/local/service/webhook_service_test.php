@@ -79,4 +79,30 @@ final class webhook_service_test extends stripe_testcase {
         $this->assertFalse($service->delete_webhook(444));
         $this->assertNull($service->get_webhook(444));
     }
+
+    /**
+     * An endpoint deleted in Stripe is forgotten, so a new one is created instead of every purchase failing.
+     */
+    public function test_endpoint_deleted_in_stripe_is_recreated(): void {
+        global $DB;
+
+        $DB->insert_record('paygw_stripe_webhooks', (object)[
+            'paymentaccountid' => 555,
+            'webhookid' => 'we_deleted',
+            'secret' => 'whsec_old',
+        ]);
+        $webhooks = $this->mock_stripe_service('webhookEndpoints', WebhookEndpointService::class);
+        $webhooks->method('retrieve')->with('we_deleted')->willThrowException(
+            \Stripe\Exception\InvalidRequestException::factory('No such webhook endpoint', 404, null, null, null,
+                'resource_missing')
+        );
+        $webhooks->expects($this->once())->method('create')
+            ->willReturn(WebhookEndpoint::constructFrom(['id' => 'we_new', 'secret' => 'whsec_new']));
+        $service = new webhook_service($this->client);
+
+        $this->assertNull($service->get_webhook(555));
+        $this->assertFalse($DB->record_exists('paygw_stripe_webhooks', ['webhookid' => 'we_deleted']));
+        $this->assertTrue($service->create_webhook(555));
+        $this->assertSame('whsec_new', $DB->get_field('paygw_stripe_webhooks', 'secret', ['paymentaccountid' => 555]));
+    }
 }
