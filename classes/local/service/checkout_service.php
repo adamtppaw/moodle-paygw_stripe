@@ -182,6 +182,8 @@ class checkout_service {
             'metadata' => wsb_metadata::payment($buyer, $component, $paymentarea, $itemid),
             'payment_intent_data' => [
                 'metadata' => wsb_metadata::payment($buyer, $component, $paymentarea, $itemid),
+                // WSB Merito: fills the "Description" column of the Stripe payments list (the product name).
+                'description' => $description,
             ],
             'allow_promotion_codes' => $config->allowpromotioncodes == 1,
             // WSB Merito: the name entered in Checkout (e.g. a company name with its tax ID) is stored on the customer
@@ -248,7 +250,9 @@ class checkout_service {
 
         $storedsession = $this->checkoutrepository->find_by_sessionid($session->id);
         if ($storedsession != null) {
-            $storedsession = $storedsession->with_status($session->status)->with_paymentstatus($session->payment_status);
+            // WSB Merito: also the amount actually charged (after promotion codes) and the PaymentIntent.
+            $storedsession = $storedsession->with_status($session->status)->with_paymentstatus($session->payment_status)
+                ->with_payment($session->payment_intent, (int) $session->amount_total);
             $this->checkoutrepository->save($storedsession);
             return;
         }

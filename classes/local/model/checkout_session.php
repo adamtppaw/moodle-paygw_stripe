@@ -88,6 +88,31 @@ final class checkout_session implements mappable_model {
     }
 
     /**
+     * Copy with the amount actually charged and the PaymentIntent (WSB Merito).
+     *
+     * The record is saved when the Checkout session is created, before a promotion code or tax changes the
+     * amount and before a PaymentIntent exists.
+     *
+     * @param string|null $paymentintent
+     * @param int $amounttotal
+     * @return self
+     */
+    public function with_payment(?string $paymentintent, int $amounttotal): self {
+        return new self(
+            id: $this->id,
+            userid: $this->userid,
+            checkoutsessionid: $this->checkoutsessionid,
+            paymentintent: $paymentintent ?? $this->paymentintent,
+            customerid: $this->customerid,
+            amounttotal: $amounttotal,
+            paymentstatus: $this->paymentstatus,
+            status: $this->status,
+            productid: $this->productid,
+            delivered: $this->delivered,
+        );
+    }
+
+    /**
      * Create a new instance with a different payment status.
      *
      * @param string|null $paymentstatus
