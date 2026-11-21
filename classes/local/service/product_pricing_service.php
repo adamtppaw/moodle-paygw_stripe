@@ -73,7 +73,7 @@ class product_pricing_service {
                 $product = $this->stripe->products->retrieve($record->productid);
                 // WSB Merito: an archived (inactive) product cannot get new prices nor be sold in Checkout.
                 // Treat it as missing, so a new active product is created instead of failing the payment.
-                if (empty($product->active)) {
+                if (isset($product->active) && $product->active === false) {
                     $this->productrepository->delete_product_by_parts($component, $paymentarea, $itemid);
                     return null;
                 }
@@ -100,8 +100,7 @@ class product_pricing_service {
      * @throws \dml_exception
      */
     public function create_product(string $description, string $component, string $paymentarea, string $itemid): Product {
-        $description = wsb_metadata::product_name($component, $itemid,
-            purchase_description::get($component, $paymentarea, (int)$itemid));
+        $description = purchase_description::get($component, $paymentarea, (int)$itemid);
         $product = $this->stripe->products->create([
             'name' => $description,
             'metadata' => wsb_metadata::product($component, $paymentarea, $itemid),
@@ -206,8 +205,7 @@ class product_pricing_service {
         string $itemid,
         ?array $subscription = null
     ) {
-        $description = wsb_metadata::product_name($component, $itemid,
-            purchase_description::get($component, $paymentarea, (int)$itemid));
+        $description = purchase_description::get($component, $paymentarea, (int)$itemid);
         $unitamount = $this->get_unit_amount($cost, $payable->get_currency());
         $currency = strtolower($payable->get_currency());
 
@@ -250,13 +248,16 @@ class product_pricing_service {
                 $price = $this->stripe->prices->update($price->id, ['tax_behavior' => $config->tax_behavior ?? 'inclusive']);
             }
         }
+        // WSB Merito: moodle_* metadata kept current in the same update as the name (only when stale).
+        $update = [];
         if ($product->name != $description) {
-            $product->name = $description;
-            $product = $this->stripe->products->update($product->id, ['name' => $description]);
+            $update['name'] = $description;
         }
-        // WSB Merito: keep moodle_* metadata of the product current (only when something is missing or stale).
         if ($metadata = wsb_metadata::product_update($product->metadata ?? null, $component, $paymentarea, $itemid)) {
-            $product = $this->stripe->products->update($product->id, ['metadata' => $metadata]);
+            $update['metadata'] = $metadata;
+        }
+        if ($update) {
+            $product = $this->stripe->products->update($product->id, $update);
         }
 
         return [$product, $price];

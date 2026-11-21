@@ -130,14 +130,17 @@ class customer_service {
         // Serialize profile sync with handing billing identity over to the Portal.
         $lock = $this->lock_customer((int)$user->id);
         try {
-            // WSB Merito: the name and e-mail of an existing customer are not overwritten – the buyer may have
-            // entered a company name in Checkout (invoice data). Only the language and moodle_* metadata follow
-            // the Moodle profile.
             $details = ['preferred_locales' => [$stripelocale]];
-            if ($metadata = wsb_metadata::customer($user)) {
-                if (wsb_metadata::needs_update($customer->metadata ?? null, $metadata)) {
-                    $details['metadata'] = $metadata;
-                }
+            $record = $this->customerrepository->find_by_userid((int)$user->id);
+            if (!$record || !$record->billingmanaged) {
+                $details['email'] = $user->email;
+                $details['name'] = fullname($user);
+            }
+            // WSB Merito: moodle_* metadata follows the Moodle profile (only when stale). Keeping a company name
+            // entered in Checkout is decided together with invoice data in group 11.6.
+            $metadata = wsb_metadata::customer($user);
+            if (wsb_metadata::needs_update($customer->metadata ?? null, $metadata)) {
+                $details['metadata'] = $metadata;
             }
             return $this->stripe->customers->update($customer->id, $details);
         } finally {

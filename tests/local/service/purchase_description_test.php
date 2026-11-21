@@ -44,10 +44,8 @@ final class purchase_description_test extends stripe_testcase {
     public function test_fee_description_uses_course_name(): void {
         $course = $this->getDataGenerator()->create_course(['fullname' => 'Trusted & safe course']);
         $id = enrol_get_plugin('fee')->add_instance($course);
-        $this->assertSame(
-            get_string('purchasedescription', 'enrol_fee', 'Trusted & safe course'),
-            purchase_description::get('enrol_fee', 'fee', $id)
-        );
+        // WSB Merito: course purchases are named "Rejestracja na <course>" (Polish course language).
+        $this->assertSame('Rejestracja na Trusted & safe course', purchase_description::get('enrol_fee', 'fee', $id));
     }
 
     /**
@@ -71,7 +69,7 @@ final class purchase_description_test extends stripe_testcase {
     public function test_product_creation_ignores_supplied_description(): void {
         $products = $this->mock_stripe_service('products', ProductService::class);
         $products->expects($this->once())->method('create')
-            ->with(['name' => 'Purchase mod_example / access / 42'])
+            ->with($this->callback(fn($params) => $params['name'] === 'Purchase mod_example / access / 42'))
             ->willReturn(Product::constructFrom(['id' => 'prod_trusted']));
         (new product_pricing_service($this->client))->create_product(
             'Send payment elsewhere',
@@ -95,7 +93,7 @@ final class purchase_description_test extends stripe_testcase {
             'id' => 'prod_shared', 'name' => 'Send payment elsewhere',
         ]));
         $products->expects($this->once())->method('update')
-            ->with('prod_shared', ['name' => 'Purchase mod_example / access / 42'])
+            ->with('prod_shared', $this->callback(fn($params) => $params['name'] === 'Purchase mod_example / access / 42'))
             ->willReturn(Product::constructFrom(['id' => 'prod_shared', 'name' => 'Purchase mod_example / access / 42']));
         $prices = $this->mock_stripe_service('prices', PriceService::class);
         $prices->method('all')->willReturn(Collection::constructFrom([

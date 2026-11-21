@@ -35,6 +35,15 @@ final class purchase_description {
     public static function get(string $component, string $paymentarea, int $itemid): string {
         global $DB;
 
+        // WSB Merito: courses sold by any enrol_* plugin (production uses enrol_feestripe) get the same
+        // stable name on the product, Checkout and invoice: "Rejestracja na <course>".
+        if ($component === 'enrol_fee' && $paymentarea === 'fee') {
+            $DB->get_record('enrol', ['enrol' => 'fee', 'id' => $itemid], '*', MUST_EXIST);
+        }
+        if (wsb_metadata::resolve_enrol_instance($component, $itemid)) {
+            return wsb_metadata::product_name($component, $itemid, '');
+        }
+
         if ($component === 'enrol_fee' && $paymentarea === 'fee') {
             $instance = $DB->get_record('enrol', ['enrol' => 'fee', 'id' => $itemid], '*', MUST_EXIST);
             $course = get_course($instance->courseid);
