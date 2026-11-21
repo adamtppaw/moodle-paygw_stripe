@@ -14,14 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
-/**
- * Privacy Subsystem implementation for paygw_stripe.
- *
- * @package    paygw_stripe
- * @copyright  2021 Alex Morris <alex@navra.nz>
- * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
- */
-
 namespace paygw_stripe\privacy;
 
 use core_privacy\local\metadata\collection;
@@ -29,11 +21,11 @@ use core_privacy\local\metadata\collection;
 /**
  * Privacy Subsystem implementation for paygw_stripe.
  *
- * @copyright  2021 Alex Morris <alex@navra.nz>
+ * @package    paygw_stripe
+ * @copyright  Alex Morris <alex@navra.nz>
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class provider implements \core_privacy\local\metadata\provider, \core_privacy\local\request\data_provider {
-
     /**
      * Returns metadata about this plugin.
      *
@@ -46,24 +38,46 @@ class provider implements \core_privacy\local\metadata\provider, \core_privacy\l
             [
                 'userid' => 'privacy:metadata:stripe_customers:userid',
                 'customerid' => 'privacy:metadata:stripe_customers:customerid',
+                'billingmanaged' => 'privacy:metadata:stripe_customers:billingmanaged',
             ],
             'privacy:metadata:stripe_customers'
         );
 
         $collection->add_database_table(
-            'paygw_stripe_intents',
+            'paygw_stripe_checkout_sessions',
             [
-                'userid' => 'privacy:metadata:stripe_intents:userid',
+                'userid' => 'privacy:metadata:stripe_checkout_sessions:userid',
             ],
-            'privacy:metadata:stripe_intents'
+            'privacy:metadata:stripe_checkout_sessions'
         );
 
         $collection->add_database_table(
             'paygw_stripe_subscriptions',
             [
-                'userid' => 'privacy:metadata:stripe_subscriptions:userid'
+                'userid' => 'privacy:metadata:stripe_subscriptions:userid',
+                'delivered' => 'privacy:metadata:stripe_subscriptions:delivered',
             ],
             'privacy:metadata:stripe_subscriptions'
+        );
+
+        $collection->add_database_table(
+            'paygw_stripe_invoices',
+            [
+                'userid' => 'privacy:metadata:stripe_invoices:userid',
+                'customerid' => 'privacy:metadata:stripe_invoices:customerid',
+                'invoiceid' => 'privacy:metadata:stripe_invoices:invoiceid',
+                'amounttotal' => 'privacy:metadata:stripe_invoices:amounttotal',
+                'status' => 'privacy:metadata:stripe_invoices:status',
+                'delivered' => 'privacy:metadata:stripe_invoices:delivered',
+                'emailstatus' => 'privacy:metadata:stripe_invoices:emailstatus',
+                'timeemailstarted' => 'privacy:metadata:stripe_invoices:timeemailstarted',
+                'timeemailsent' => 'privacy:metadata:stripe_invoices:timeemailsent',
+                'banktransfercountry' => 'privacy:metadata:stripe_invoices:banktransfercountry',
+                'paymentmethodstatus' => 'privacy:metadata:stripe_invoices:paymentmethodstatus',
+                'paymentmethods' => 'privacy:metadata:stripe_invoices:paymentmethods',
+                'promotioncodeid' => 'privacy:metadata:stripe_invoices:promotioncodeid',
+            ],
+            'privacy:metadata:stripe_invoices'
         );
 
         return $collection;

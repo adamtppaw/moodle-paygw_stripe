@@ -18,7 +18,7 @@
  * Redirects cancelled payments back to the course page or site index
  *
  * @package    paygw_stripe
- * @copyright  2021 Alex Morris <alex@navra.nz>
+ * @copyright  Alex Morris <alex@navra.nz>
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
@@ -33,10 +33,11 @@ $itemid = optional_param('itemid', null, PARAM_INT);
 
 $url = new moodle_url('/');
 
-// Return to the course for any enrolment plugin (enrol_fee, enrol_feestripe, ...),
-// or to the site home page when the user cannot see the course (hidden subscription course).
-if ($component && $paymentarea && $itemid) {
-    $url = \paygw_stripe\stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id, false);
+if ($component == 'enrol_fee' && $paymentarea == 'fee') {
+    $courseid = $DB->get_field('enrol', 'courseid', ['enrol' => 'fee', 'id' => $itemid]);
+    if (!empty($courseid)) {
+        $url = course_get_url($courseid);
+    }
 }
 
 redirect($url, get_string('paymentcancelled', 'paygw_stripe'));

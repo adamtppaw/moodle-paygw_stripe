@@ -14,22 +14,18 @@
 // You should have received a copy of the GNU General Public License
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
-/**
- * Contains class for Stripe payment gateway.
- *
- * @package    paygw_stripe
- * @copyright  2021 Alex Morris <alex@navra.nz>
- * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
- */
-
 namespace paygw_stripe;
 
 use core_payment\form\account_gateway;
+use Exception;
+use paygw_stripe\local\service\invoice_service;
+use paygw_stripe\local\service\stripe_service_factory;
 
 /**
  * The gateway class for Stripe payment gateway.
  *
- * @copyright  2021 Alex Morris <alex@navra.nz>
+ * @package    paygw_stripe
+ * @copyright  Alex Morris <alex@navra.nz>
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class gateway extends \core_payment\gateway {
@@ -51,7 +47,7 @@ class gateway extends \core_payment\gateway {
             'LRD', 'LSL', 'MAD', 'MDL', 'MGA', 'MKD', 'MMK', 'MNT', 'MOP', 'MUR', 'MVR', 'MWK', 'MXN', 'MYR', 'MZN', 'NAD', 'NGN',
             'NIO', 'NOK', 'NPR', 'NZD', 'PAB', 'PEN', 'PGK', 'PHP', 'PKR', 'PLN', 'PYG', 'QAR', 'RON', 'RSD', 'RUB', 'RWF', 'SAR',
             'SBD', 'SCR', 'SEK', 'SGD', 'SHP', 'SOS', 'SRD', 'STD', 'SZL', 'THB', 'TJS', 'TOP', 'TRY', 'TTD', 'TWD', 'TZS', 'UAH',
-            'UGX', 'UYU', 'UZS', 'VND', 'VUV', 'WST', 'XAF', 'XCD', 'XOF', 'XPF', 'YER', 'ZAR', 'ZMW'
+            'UGX', 'UYU', 'UZS', 'VND', 'VUV', 'WST', 'XAF', 'XCD', 'XOF', 'XPF', 'YER', 'ZAR', 'ZMW',
         ];
     }
 
@@ -86,6 +82,47 @@ class gateway extends \core_payment\gateway {
         $mform->setType('secretkey', PARAM_TEXT);
         $mform->addHelpButton('secretkey', 'secretkey', 'paygw_stripe');
 
+        $existing = $form->get_gateway_persistent()->get_configuration();
+        $options  = [];
+        if (!empty($existing['apikey']) && !empty($existing['secretkey'])) {
+            try {
+                $factory = new stripe_service_factory($existing['apikey'], $existing['secretkey']);
+                $configs = $factory->payment_method_config_service()->list_payment_method_configs();
+                foreach ($configs as $config) {
+                    $options[$config->id] = $config->name . ' (' . $config->id . ')';
+                }
+            } catch (Exception $e) {
+                // Ignored, we don't want to break the form if we can't connect to Stripe.
+                debugging('Could not fetch Stripe payment method configurations: ' . $e->getMessage(), DEBUG_DEVELOPER);
+            }
+        }
+        if ($options) {
+            $mform->addElement(
+                'select',
+                'paymentmethodconfiguration',
+                get_string('paymentmethodconfiguration', 'paygw_stripe'),
+                $options
+            );
+            $mform->addHelpButton('paymentmethodconfiguration', 'paymentmethodconfiguration', 'paygw_stripe');
+            $mform->addElement(
+                'static',
+                'paymentmethodconfigurationlink',
+                '',
+                get_string('paymentmethodconfigurationlink', 'paygw_stripe')
+            );
+        } else {
+            $mform->addElement(
+                'static',
+                'paymentmethodconfiguration_info',
+                '',
+                get_string('paymentmethodconfigurationsavekeysfirst', 'paygw_stripe')
+            );
+            $mform->addElement('hidden', 'paymentmethodconfiguration');
+            $mform->setType('paymentmethodconfiguration', PARAM_ALPHANUMEXT);
+        }
+
+        // WSB Merito (upstream-sync, krok 10): pola naszej wersji zostają w formularzu, żeby zapis
+        // formularza nie usuwał ich z konfiguracji konta. Zachowanie przenoszą grupy 11.4 i 11.5.
         // When enabled, the plugin omits the payment_method_types parameter when creating the
         // Stripe Checkout Session. Stripe then uses "dynamic payment methods", i.e. the set of
         // methods enabled and ordered in the Stripe Dashboard (Settings > Payment methods),
@@ -119,9 +156,6 @@ class gateway extends \core_payment\gateway {
         // The manual list is irrelevant when dynamic payment methods are used, so hide it.
         $mform->hideIf('paymentmethods', 'usedynamicpaymentmethods', 'checked');
 
-        $mform->addElement('advcheckbox', 'allowpromotioncodes', get_string('allowpromotioncodes', 'paygw_stripe'));
-        $mform->setDefault('allowpromotioncodes', true);
-
         // Tax handling mode. The three modes are mutually exclusive:
         //  - none:      the plugin adds no tax.
         //  - automatic: use Stripe Tax (automatic_tax). Requires Stripe Tax to be configured in the
@@ -141,15 +175,6 @@ class gateway extends \core_payment\gateway {
         $mform->setDefault('taxmode', 'none');
         $mform->addHelpButton('taxmode', 'taxmode', 'paygw_stripe');
 
-        // Default tax behavior only applies to Stripe Tax (automatic mode). For manual tax rates the
-        // inclusive/exclusive setting is a property of the Tax Rate object itself, set in the Dashboard.
-        $mform->addElement('select', 'defaulttaxbehavior', get_string('defaulttaxbehavior', 'paygw_stripe'), [
-            'exclusive' => get_string('taxbehavior:exclusive', 'paygw_stripe'),
-            'inclusive' => get_string('taxbehavior:inclusive', 'paygw_stripe'),
-        ]);
-        $mform->addHelpButton('defaulttaxbehavior', 'defaulttaxbehavior', 'paygw_stripe');
-        $mform->hideIf('defaulttaxbehavior', 'taxmode', 'neq', 'automatic');
-
         // Manual Stripe Tax Rate ID (txr_...). Mode-specific in Stripe: a test-mode rate ID is not
         // valid in live mode, which is why this belongs in the per-account gateway config (each Moodle
         // payment account maps to a separate Stripe project/key) rather than a single global setting.
@@ -158,12 +183,64 @@ class gateway extends \core_payment\gateway {
         $mform->addHelpButton('manualtaxrate', 'manualtaxrate', 'paygw_stripe');
         $mform->hideIf('manualtaxrate', 'taxmode', 'neq', 'manual');
 
+        $mform->addElement('advcheckbox', 'allowpromotioncodes', get_string('allowpromotioncodes', 'paygw_stripe'));
+        $mform->setDefault('allowpromotioncodes', true);
+
+        $mform->addElement(
+            'advcheckbox',
+            'enableautomatictax',
+            get_string('enableautomatictax', 'paygw_stripe'),
+            get_string('enableautomatictax_desc', 'paygw_stripe')
+        );
+
+        $mform->addElement('select', 'defaulttaxbehavior', get_string('defaulttaxbehavior', 'paygw_stripe'), [
+            'exclusive' => get_string('taxbehavior:exclusive', 'paygw_stripe'),
+            'inclusive' => get_string('taxbehavior:inclusive', 'paygw_stripe'),
+        ]);
+        $mform->addHelpButton('defaulttaxbehavior', 'defaulttaxbehavior', 'paygw_stripe');
+
+        $mform->addElement(
+            'advcheckbox',
+            'collectbillingaddress',
+            get_string('collectbillingaddress', 'paygw_stripe'),
+            get_string('collectbillingaddress_desc', 'paygw_stripe')
+        );
+        $mform->setDefault('collectbillingaddress', false);
+
         $mform->addElement('select', 'type', get_string('paymenttype', 'paygw_stripe'), [
             'onetime' => get_string('paymenttype:onetime', 'paygw_stripe'),
             'subscription' => get_string('paymenttype:subscription', 'paygw_stripe'),
+            'invoice' => get_string('paymenttype:invoice', 'paygw_stripe'),
         ]);
         $mform->setType('type', PARAM_TEXT);
         $mform->setDefault('type', 'onetime');
+        $mform->addHelpButton('type', 'paymenttype', 'paygw_stripe');
+        $mform->hideIf('allowpromotioncodes', 'type', 'eq', 'invoice');
+        $mform->hideIf('collectbillingaddress', 'type', 'eq', 'invoice');
+        $mform->hideIf('paymentmethodconfiguration', 'type', 'eq', 'invoice');
+
+        $mform->addElement('advcheckbox', 'invoicepromotioncodes', get_string('invoicepromotioncodes', 'paygw_stripe'));
+        $mform->setDefault('invoicepromotioncodes', false);
+        $mform->addHelpButton('invoicepromotioncodes', 'invoicepromotioncodes', 'paygw_stripe');
+        $mform->hideIf('invoicepromotioncodes', 'type', 'neq', 'invoice');
+
+        $bankcountries = [];
+        foreach (invoice_service::EU_BANK_TRANSFER_COUNTRIES as $country) {
+            $bankcountries[$country] = get_string($country, 'countries');
+        }
+        $mform->addElement('select', 'invoicebankcountry', get_string('invoicebankcountry', 'paygw_stripe'), $bankcountries);
+        $mform->setDefault('invoicebankcountry', invoice_service::DEFAULT_BANK_TRANSFER_COUNTRY);
+        $mform->addHelpButton('invoicebankcountry', 'invoicebankcountry', 'paygw_stripe');
+        $mform->hideIf('invoicebankcountry', 'type', 'neq', 'invoice');
+
+        $mform->addElement(
+            'advcheckbox',
+            'invoicecreation',
+            get_string('invoicecreation', 'paygw_stripe'),
+            get_string('invoicecreation_desc', 'paygw_stripe')
+        );
+        $mform->setDefault('invoicecreation', false);
+        $mform->hideIf('invoicecreation', 'type', 'neq', 'onetime');
 
         $mform->addElement('select', 'subscriptioninterval', get_string('subscriptioninterval', 'paygw_stripe'), [
             'daily' => get_string('subscriptionperiod:daily', 'paygw_stripe'),
@@ -187,8 +264,11 @@ class gateway extends \core_payment\gateway {
         $mform->setType('customsubscriptioninterval', PARAM_TEXT);
         $mform->setDefault('customsubscriptioninterval', 'month');
 
-        $mform->addElement('text', 'customsubscriptionintervalcount',
-            get_string('customsubscriptionintervalcount', 'paygw_stripe'));
+        $mform->addElement(
+            'text',
+            'customsubscriptionintervalcount',
+            get_string('customsubscriptionintervalcount', 'paygw_stripe')
+        );
         $mform->setType('customsubscriptionintervalcount', PARAM_INT);
         $mform->setDefault('customsubscriptionintervalcount', 1);
         $mform->addHelpButton('customsubscriptionintervalcount', 'customsubscriptionintervalcount', 'paygw_stripe');
@@ -196,13 +276,23 @@ class gateway extends \core_payment\gateway {
 
         $mform->hideIf('customsubscriptioninterval', 'subscriptioninterval', 'neq', 'custom');
         $mform->hideIf('customsubscriptionintervalcount', 'subscriptioninterval', 'neq', 'custom');
+        $mform->hideIf('customsubscriptioninterval', 'type', 'neq', 'subscription');
+        $mform->hideIf('customsubscriptionintervalcount', 'type', 'neq', 'subscription');
 
-        $mform->addElement('advcheckbox', 'anchorbilling', get_string('anchoredbilling', 'paygw_stripe'),
-            get_string('anchoredbilling_help', 'paygw_stripe'));
+        $mform->addElement(
+            'advcheckbox',
+            'anchorbilling',
+            get_string('anchoredbilling', 'paygw_stripe'),
+            get_string('anchoredbilling_help', 'paygw_stripe')
+        );
         $mform->hideIf('anchorbilling', 'type', 'neq', 'subscription');
 
-        $mform->addElement('advcheckbox', 'firstintervalfree', get_string('trialperiod', 'paygw_stripe'),
-            get_string('trialperiod_help', 'paygw_stripe'));
+        $mform->addElement(
+            'advcheckbox',
+            'firstintervalfree',
+            get_string('trialperiod', 'paygw_stripe'),
+            get_string('trialperiod_help', 'paygw_stripe')
+        );
         $mform->hideIf('firstintervalfree', 'type', 'neq', 'subscription');
     }
 
@@ -214,13 +304,14 @@ class gateway extends \core_payment\gateway {
      * @param array $files
      * @param array $errors form errors (passed by reference)
      */
-    public static function validate_gateway_form(account_gateway $form,
-        \stdClass $data, array $files, array &$errors): void {
-        // When dynamic payment methods are enabled the manual list may legitimately be empty,
-        // because the available methods are managed in the Stripe Dashboard instead.
-        $usedynamic = !empty($data->usedynamicpaymentmethods);
-        if ($data->enabled && (empty($data->apikey) || empty($data->secretkey) ||
-                (!$usedynamic && empty($data->paymentmethods)))) {
+    public static function validate_gateway_form(
+        account_gateway $form,
+        \stdClass $data,
+        array $files,
+        array &$errors
+    ): void {
+        global $DB;
+        if ($data->enabled && (empty($data->apikey) || empty($data->secretkey))) {
             $errors['enabled'] = get_string('gatewaycannotbeenabled', 'payment');
         }
 
@@ -228,6 +319,50 @@ class gateway extends \core_payment\gateway {
         if ($data->enabled && ($data->taxmode ?? 'none') === 'manual'
                 && trim($data->manualtaxrate ?? '') === '') {
             $errors['manualtaxrate'] = get_string('manualtaxrate_required', 'paygw_stripe');
+        }
+
+        if (
+            ($data->type ?? '') === 'invoice' &&
+                !in_array(
+                    $data->invoicebankcountry ?? invoice_service::DEFAULT_BANK_TRANSFER_COUNTRY,
+                    invoice_service::EU_BANK_TRANSFER_COUNTRIES,
+                    true
+                )
+        ) {
+            $errors['invoicebankcountry'] = get_string('invalidinvoicebankcountry', 'paygw_stripe');
+        }
+
+        // Very hacky as this shouldn't live in a validation function, but due to Moodle limitations it's placed here.
+        // Check if API keys have changed, remove existing webhook and create new.
+        $existingdata = $form->get_gateway_persistent()->get_configuration();
+
+        $newapikey = $data->apikey ?? null;
+        $newsecret = $data->secretkey ?? null;
+
+        $oldapikey = $existingdata['apikey'] ?? null;
+        $oldsecret = $existingdata['secretkey'] ?? null;
+
+        $apikeychanged = ($newapikey !== null) && ($newapikey !== $oldapikey);
+        $secretchanged = ($newsecret !== null) && ($newsecret !== $oldsecret);
+
+        if ($apikeychanged || $secretchanged) {
+            $paymentaccountid = $form->get_gateway_persistent()->get_account()->get('id');
+
+            $DB->delete_records('paygw_stripe_webhooks', ['paymentaccountid' => $paymentaccountid]);
+
+            try {
+                if (is_string($oldapikey) && $oldapikey !== '' && is_string($oldsecret) && $oldsecret !== '') {
+                    $factory = new stripe_service_factory($oldapikey, $oldsecret);
+                    $webhookservice = $factory->webhook_service();
+                    $webhookservice->delete_webhook($paymentaccountid);
+                }
+
+                $factory = new stripe_service_factory($newapikey, $newsecret);
+                $webhookservice = $factory->webhook_service();
+                $webhookservice->create_webhook($paymentaccountid);
+            } catch (Exception $ignored) {
+                $errors['apikey'] = get_string('apiwebhookerror', 'paygw_stripe');
+            }
         }
     }
 }

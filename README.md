@@ -13,27 +13,23 @@ Provides a payment gateway with Stripe in Moodle
 
 ## Details
 
+Stripe offers over 135 currencies, and many payment methods including cards, bank transfer, Apple Pay, SEPA, and more. The plugin supports all of the payment methods that your Stripe account is configured to use.
+
 Stripe offers 106+ currencies however certain payment gateways only support a subset of those.  
 E.g. Alipay only supports CNY and NZD currencies.
 
 The plugin supports using promotion/coupon codes and automatic tax calculation.
 
-This plugin can be used with these payment gateways:
+### Invoice payment
 
-* Card
-* Alipay
-* Bancontact
-* EPS
-* giropay
-* iDEAL
-* P24
-* SEPA Direct Debit
-* Sofort
-* UPI
-* NetBanking
-* Klarna
+Select **Invoice payment** in the Stripe payment account to let customers provide their billing details in Stripe's Customer Portal and receive a Stripe invoice by email. Customers pay through Stripe's hosted invoice page; Moodle grants access only after Stripe confirms payment. For EUR invoices, the plugin keeps the payment methods Stripe makes available and also offers EU bank transfer. The bank country is configurable (default: Germany). Existing Checkout and subscription payment flows remain available.
 
-Some of those payment gateways will only work in Stripe if you have provided additional verification details.
+An unfinished billing request can be resumed by starting the same purchase again before its original expiry. Moodle creates a fresh Portal session and rotates the continuation token while retaining the saved purchase and customer details; retries do not extend the original expiry. A failed Portal request leaves the billing request safe to resume. Restarting invalidates the old Portal completion and Return links; only the newest session's links are valid. Once billing details have been submitted, retries continue the saved invoice recovery flow instead of replacing its token.
+
+
+## Support
+
+Create an issue on the [GitHub repository](https://github.com/alexmorrisnz/moodle-paygw_stripe/issues), or email contact@navra.nz.
 
 ## Warm Thanks
 

@@ -17,28 +17,43 @@
  * This module is responsible for Stripe content in the gateways modal.
  *
  * @module     paygw_stripe/gateway_modal
- * @copyright  2021 Alex Morris <alex@navra.nz>
+ * @copyright  Alex Morris <alex@navra.nz>
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
 import Templates from 'core/templates';
-import ModalFactory from 'core/modal_factory';
+import Modal from 'core/modal';
+import {preparePayment} from './invoice_promotions';
+
+let paymentInProgress = false;
+
+window.addEventListener('pageshow', () => {
+    paymentInProgress = false;
+});
 
 const showModalWithPlaceholder = async() => {
-    const modal = await ModalFactory.create({
+    const modal = await Modal.create({
         body: await Templates.render('paygw_stripe/stripe_button_placeholder', {})
     });
     modal.show();
 };
 
-export const process = (component, paymentArea, itemId, description) => {
-    return showModalWithPlaceholder()
-        .then(() => {
-            location.href = M.cfg.wwwroot + '/payment/gateway/stripe/pay.php?' +
-                'component=' + component +
-                '&paymentarea=' + paymentArea +
-                '&itemid=' + itemId +
-                '&description=' + description;
-            return new Promise(() => null);
-        });
+export const process = async(component, paymentArea, itemId) => {
+    if (paymentInProgress) {
+        return new Promise(() => null);
+    }
+    paymentInProgress = true;
+    try {
+        const token = await preparePayment(component, paymentArea, itemId);
+        await showModalWithPlaceholder();
+        const query = new URLSearchParams({component, paymentarea: paymentArea, itemid: itemId});
+        if (token) {
+            query.set('promotionchoice', token);
+        }
+        location.href = M.cfg.wwwroot + '/payment/gateway/stripe/pay.php?' + query.toString();
+        return new Promise(() => null);
+    } catch (error) {
+        paymentInProgress = false;
+        throw error.message || error;
+    }
 };

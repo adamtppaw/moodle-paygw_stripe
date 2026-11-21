@@ -18,13 +18,14 @@
  * Webhook for receiving events from Stripe.
  *
  * @package    paygw_stripe
- * @copyright  2023 Alex Morris <alex@navra.nz>
+ * @copyright  Alex Morris <alex@navra.nz>
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
 define('NO_MOODLE_COOKIES', true);
 
 use core_payment\helper;
+use paygw_stripe\local\service\stripe_service_factory;
 use paygw_stripe\stripe_helper;
 use Stripe\Exception\SignatureVerificationException;
 use Stripe\Webhook;
@@ -40,39 +41,64 @@ if ($jsonpayload == null) {
     http_response_code(400);
     exit();
 }
-$metadata = $jsonpayload['data']['object']['metadata'] ?? [];
-// Objects not created by this plugin (e.g. Checkout Sessions of Payment Links, which also send
-// checkout.session.completed) carry no Moodle metadata. Accept them without doing anything,
-// otherwise Stripe would keep retrying the delivery and report the endpoint as failing.
-if (empty($metadata['component']) || empty($metadata['paymentarea']) || empty($metadata['itemid'])) {
+// Standalone invoices resolve their account and purchase from the local record.
+// Do not route subscription/Checkout invoices using their metadata.
+if (in_array($jsonpayload['type'] ?? '', ['invoice.paid', 'invoice.voided'], true)) {
+    if (empty($_SERVER['HTTP_STRIPE_SIGNATURE'])) {
+        http_response_code(400);
+        exit();
+    }
+    try {
+        $handler = new \paygw_stripe\local\service\invoice_webhook_handler();
+        $handled = $handler->handle($payload, $_SERVER['HTTP_STRIPE_SIGNATURE']);
+        http_response_code($handled ? 200 : 202);
+    } catch (SignatureVerificationException $e) {
+        // Stripe broadcasts to all registered endpoints, each with its own secret.
+        http_response_code(202);
+    } catch (UnexpectedValueException $e) {
+        http_response_code(400);
+    } catch (\Throwable $e) {
+        // A retry is essential if payment storage or course delivery failed.
+        http_response_code(500);
+        debugging('paygw_stripe: invoice webhook failed (' . get_class($e) . '), event ' .
+            clean_param($jsonpayload['id'] ?? '', PARAM_ALPHANUMEXT), DEBUG_DEVELOPER);
+    }
+    exit();
+}
+
+if (!isset($jsonpayload['data']['object']['metadata'])) {
     http_response_code(202);
     exit();
 }
-// Events go to every endpoint of the Stripe account. Objects created by another Moodle site using the
-// same account (e.g. a test site) name an item that may not exist here: accept them without doing
-// anything instead of failing, otherwise Stripe retries them for days and may disable the endpoint.
-if (!empty($metadata['moodle_site']) && $metadata['moodle_site'] !== $CFG->wwwroot) {
+if (
+    !isset($jsonpayload['data']['object']['metadata']['component']) ||
+    !isset($jsonpayload['data']['object']['metadata']['paymentarea']) ||
+    !isset($jsonpayload['data']['object']['metadata']['itemid'])
+) {
     http_response_code(202);
     exit();
 }
-try {
-    $config = (object) helper::get_gateway_configuration($metadata['component'], $metadata['paymentarea'],
-        $metadata['itemid'], 'stripe');
-    $payable = helper::get_payable($metadata['component'], $metadata['paymentarea'], $metadata['itemid']);
-} catch (moodle_exception $e) {
-    // The item or its payment account no longer exists here (e.g. a deleted enrolment method).
-    error_log('paygw_stripe: webhook for unknown item ' . $metadata['component'] . '/' . $metadata['paymentarea'] . '/' .
-        $metadata['itemid'] . ' ignored: ' . $e->getMessage());
-    http_response_code(202);
-    exit();
-}
+
+$metadata = $jsonpayload['data']['object']['metadata'];
+$config =
+    (object) helper::get_gateway_configuration($metadata['component'], $metadata['paymentarea'], $metadata['itemid'], 'stripe');
+
+$factory = new stripe_service_factory($config->apikey, $config->secretkey);
+
 $stripehelper = new stripe_helper($config->apikey, $config->secretkey);
 
-// Validate payload using secret retrieved from webhook table.
-$sigheader = $_SERVER['HTTP_STRIPE_SIGNATURE'] ?? '';
+if (!isset($_SERVER['HTTP_STRIPE_SIGNATURE'])) {
+    http_response_code(400);
+    exit();
+}
+
+$sigheader = $_SERVER['HTTP_STRIPE_SIGNATURE'];
 $event = null;
 
-$webhook = $stripehelper->get_webhook($payable->get_account_id());
+// Validate payload using secret retrieved from webhook table.
+$payable = helper::get_payable($metadata['component'], $metadata['paymentarea'], $metadata['itemid']);
+$webhookservice = $factory->webhook_service();
+$webhook = $webhookservice->get_webhook($payable->get_account_id());
 if ($webhook == null) {
     http_response_code(500);
     exit();
@@ -81,7 +107,9 @@ $endpointsecret = $webhook->secret;
 
 try {
     $event = Webhook::constructEvent(
-        $payload, $sigheader, $endpointsecret
+        $payload,
+        $sigheader,
+        $endpointsecret
     );
 
     if (!$stripehelper->process_stripe_event($event, $metadata)) {
@@ -94,8 +122,10 @@ try {
     http_response_code(400);
     exit();
 } catch (SignatureVerificationException $e) {
-    // Invalid signature.
-    http_response_code(400);
+    // Signature mismatch means this event was signed by another webhook's secret.
+    // This happens routinely when multiple payment accounts exist, because Stripe
+    // broadcasts each event to all subscribed webhooks.
+    http_response_code(202);
     exit();
 }
 

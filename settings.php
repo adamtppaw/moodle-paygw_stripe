@@ -18,15 +18,22 @@
  * Settings for the Stripe payment gateway
  *
  * @package    paygw_stripe
- * @copyright  2021 Alex Morris <alex@navra.nz>
+ * @copyright  Alex Morris <alex@navra.nz>
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
 defined('MOODLE_INTERNAL') || die();
 
 if ($ADMIN->fulltree) {
-
     $settings->add(new admin_setting_heading('paygw_stripe_settings', '', get_string('pluginname_desc', 'paygw_stripe')));
 
     \core_payment\helper::add_common_gateway_settings($settings, 'paygw_stripe');
+
+    $settings->add(new admin_setting_configtext(
+        'paygw_stripe/forcedlocale',
+        get_string('forcedlocale', 'paygw_stripe'),
+        get_string('forcedlocale_desc', 'paygw_stripe'),
+        '',
+        PARAM_TEXT
+    ));
 }
