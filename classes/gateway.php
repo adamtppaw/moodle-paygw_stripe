@@ -192,7 +192,10 @@ class gateway extends \core_payment\gateway {
         $mform->setDefault('allowpromotioncodes', true);
 
         // WSB Merito: the "enableautomatictax" checkbox is replaced by the tax mode above ("automatic"); older
-        // configurations that only have the checkbox are still honoured (wsb_tax::is_automatic()).
+        // configurations that only have the checkbox are still honoured (wsb_tax::is_automatic()). Kept as a hidden field
+        // so that saving the form does not drop the stored value (the configuration is rebuilt from the form fields).
+        $mform->addElement('hidden', 'enableautomatictax');
+        $mform->setType('enableautomatictax', PARAM_INT);
         $mform->addElement('select', 'defaulttaxbehavior', get_string('defaulttaxbehavior', 'paygw_stripe'), [
             'exclusive' => get_string('taxbehavior:exclusive', 'paygw_stripe'),
             'inclusive' => get_string('taxbehavior:inclusive', 'paygw_stripe'),
