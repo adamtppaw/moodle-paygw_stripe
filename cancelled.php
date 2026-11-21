@@ -33,11 +33,10 @@ $itemid = optional_param('itemid', null, PARAM_INT);
 
 $url = new moodle_url('/');
 
-if ($component == 'enrol_fee' && $paymentarea == 'fee') {
-    $courseid = $DB->get_field('enrol', 'courseid', ['enrol' => 'fee', 'id' => $itemid]);
-    if (!empty($courseid)) {
-        $url = course_get_url($courseid);
-    }
+if ($component && $paymentarea && $itemid) {
+    // WSB Merito: back to the course, or home for a course the user cannot open (hidden subscription course).
+    $url = \paygw_stripe\local\service\wsb_purchase_guard::get_return_url($component, $paymentarea, $itemid,
+        (int) $USER->id, false);
 }
 
 redirect($url, get_string('paymentcancelled', 'paygw_stripe'));

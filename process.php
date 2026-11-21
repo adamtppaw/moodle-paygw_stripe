@@ -64,7 +64,7 @@ if ($sessionmode === 'subscription') {
         redirect(new moodle_url('/'), get_string('alreadydeliveredcourse', 'paygw_stripe'));
     }
 
-    $url = helper::get_success_url($component, $paymentarea, $itemid);
+    $url = \paygw_stripe\local\service\wsb_purchase_guard::get_return_url($component, $paymentarea, $itemid, (int) $USER->id);
     redirect($url, get_string('subscriptionsuccessful', 'paygw_stripe'), 0, 'success');
 } else if ($sessionmode === 'payment') {
     if (
@@ -90,7 +90,7 @@ if ($sessionmode === 'subscription') {
         $checkoutservice->mark_delivered($sessionid);
 
         // Find redirection.
-        $url = helper::get_success_url($component, $paymentarea, $itemid);
+        $url = \paygw_stripe\local\service\wsb_purchase_guard::get_return_url($component, $paymentarea, $itemid, (int) $USER->id);
         redirect($url, get_string('paymentsuccessful', 'paygw_stripe'), 0, 'success');
     } else if ($checkoutservice->is_pending($sessionid)) {
         $checkoutservice->save_payment_status($sessionid);
