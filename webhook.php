@@ -80,8 +80,23 @@ if (
 }
 
 $metadata = $jsonpayload['data']['object']['metadata'];
-$config =
-    (object) helper::get_gateway_configuration($metadata['component'], $metadata['paymentarea'], $metadata['itemid'], 'stripe');
+// WSB Merito: events go to every endpoint of the Stripe account. Objects of another Moodle site using the same account
+// (e.g. a test site) name an item that may not exist here – accept them without doing anything instead of failing,
+// otherwise Stripe retries them for days and may disable the endpoint. The same for an item deleted here.
+if (!empty($metadata['moodle_site']) && $metadata['moodle_site'] !== $CFG->wwwroot) {
+    http_response_code(202);
+    exit();
+}
+try {
+    $config = (object) helper::get_gateway_configuration($metadata['component'], $metadata['paymentarea'],
+        $metadata['itemid'], 'stripe');
+    $payable = helper::get_payable($metadata['component'], $metadata['paymentarea'], $metadata['itemid']);
+} catch (moodle_exception $e) {
+    debugging('paygw_stripe: webhook for unknown item ' . $metadata['component'] . '/' . $metadata['paymentarea'] . '/' .
+        $metadata['itemid'] . ' ignored: ' . $e->getMessage(), DEBUG_DEVELOPER);
+    http_response_code(202);
+    exit();
+}
 
 $factory = new stripe_service_factory($config->apikey, $config->secretkey);
 
@@ -96,7 +111,6 @@ $sigheader = $_SERVER['HTTP_STRIPE_SIGNATURE'];
 $event = null;
 
 // Validate payload using secret retrieved from webhook table.
-$payable = helper::get_payable($metadata['component'], $metadata['paymentarea'], $metadata['itemid']);
 $webhookservice = $factory->webhook_service();
 $webhook = $webhookservice->get_webhook($payable->get_account_id());
 if ($webhook == null) {
@@ -122,10 +136,20 @@ try {
     http_response_code(400);
     exit();
 } catch (SignatureVerificationException $e) {
-    // Signature mismatch means this event was signed by another webhook's secret.
-    // This happens routinely when multiple payment accounts exist, because Stripe
-    // broadcasts each event to all subscribed webhooks.
-    http_response_code(202);
+    // Stripe broadcasts each event to all endpoints of the account, one per payment account, each with its own secret.
+    // WSB Merito: accept (202, nothing processed) only a signature made with the secret of another of our endpoints –
+    // that endpoint's delivery handles the event. A signature matching none of our secrets is forged or broken: 400.
+    global $DB;
+    foreach ($DB->get_fieldset_select('paygw_stripe_webhooks', 'secret', 'secret <> :own', ['own' => $endpointsecret]) as $secret) {
+        try {
+            Webhook::constructEvent($payload, $sigheader, $secret);
+            http_response_code(202);
+            exit();
+        } catch (SignatureVerificationException $ignored) {
+            continue;
+        }
+    }
+    http_response_code(400);
     exit();
 }
 
