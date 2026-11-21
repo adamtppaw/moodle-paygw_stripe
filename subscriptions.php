@@ -31,6 +31,8 @@ use paygw_stripe\local\service\wsb_purchase_guard;
 
 require_once(__DIR__ . '/../../../config.php');
 
+global $DB, $USER, $PAGE, $OUTPUT;
+
 require_login();
 
 $action = optional_param('action', false, PARAM_TEXT);
@@ -57,6 +59,9 @@ if ($subid != null) {
     // WSB Merito: the payment item stored with the subscription (product mapping only for older records), cancel at
     // the end of the paid period, resume, and an understandable message instead of an exception page.
     $returnurl = new moodle_url('/payment/gateway/stripe/subscriptions.php');
+    // Redirects happen after the try block: redirect() must not be caught as an error.
+    $message = null;
+    $level = \core\output\notification::NOTIFY_SUCCESS;
     try {
         $product = wsb_purchase_guard::get_subscription_item($DB->get_record('paygw_stripe_subscriptions', ['id' => $subid]));
         if (!$product) {
@@ -84,30 +89,29 @@ if ($subid != null) {
             } else {
                 $message = get_string('subscriptionalreadycancelled', 'paygw_stripe');
             }
-            redirect($returnurl, $message, null, \core\output\notification::NOTIFY_SUCCESS);
         } else if ($action == 'resume') {
             $renewsat = $subscriptionservice->resume_subscription($subscription);
             if ($renewsat) {
-                redirect($returnurl, get_string(
+                $message = get_string(
                     'subscriptionresumed',
                     'paygw_stripe',
                     subscription_service::format_subscription_date($renewsat)
-                ), null, \core\output\notification::NOTIFY_SUCCESS);
+                );
+            } else {
+                $message = get_string('subscriptionnotresumable', 'paygw_stripe');
+                $level = \core\output\notification::NOTIFY_WARNING;
             }
-            redirect(
-                $returnurl,
-                get_string('subscriptionnotresumable', 'paygw_stripe'),
-                null,
-                \core\output\notification::NOTIFY_WARNING
-            );
         } else if ($action == 'portal') {
             $subscriptionservice->load_portal($subscription);
         }
     } catch (\Stripe\Exception\ApiErrorException | moodle_exception $e) {
         debugging('paygw_stripe: action "' . $action . '" on subscription ' . $subscription->subscriptionid . ' failed: ' .
             $e->getMessage(), DEBUG_DEVELOPER);
-        redirect($returnurl, get_string('subscriptionactionerror', 'paygw_stripe'), null,
-            \core\output\notification::NOTIFY_ERROR);
+        $message = get_string('subscriptionactionerror', 'paygw_stripe');
+        $level = \core\output\notification::NOTIFY_ERROR;
+    }
+    if ($message !== null) {
+        redirect($returnurl, $message, null, $level);
     }
 }
 

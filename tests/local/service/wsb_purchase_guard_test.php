@@ -93,8 +93,7 @@ final class wsb_purchase_guard_test extends \advanced_testcase {
         $this->setUser($user);
 
         $url = wsb_purchase_guard::get_return_url('enrol_fee', 'fee', (int) $visible->id, (int) $user->id, false);
-        $this->assertSame('/course/view.php', $url->get_path(false));
-        $this->assertEquals($visible->courseid, $url->get_param('id'));
+        $this->assertSame('/course/view.php?id=' . $visible->courseid, $url->out_as_local_url(false));
 
         $this->assertSame('/my/courses.php',
             wsb_purchase_guard::get_return_url('enrol_fee', 'fee', (int) $hidden->id, (int) $user->id)->out_as_local_url(false));

@@ -168,19 +168,33 @@ final class subscriptions_test extends \advanced_testcase {
      */
     #[DataProvider('valid_requests_provider')]
     public function test_valid_sesskey_cancels_subscription(string $method): void {
+        // WSB Merito: "Cancel" ends the subscription at the end of the paid period – Stripe gets
+        // cancel_at_period_end and access stays until then (customer.subscription.deleted removes it).
+        $end = time() + 10 * DAYSECS;
+        $subscription = fn(bool $atend) => [json_encode([
+            'id' => 'sub_cancel',
+            'object' => 'subscription',
+            'status' => 'active',
+            'cancel_at_period_end' => $atend,
+            'items' => ['object' => 'list', 'data' => [['id' => 'si_cancel', 'object' => 'subscription_item',
+                'current_period_end' => $end]]],
+        ]), 200, []];
         $http = $this->createMock(ClientInterface::class);
-        $http->expects($this->once())->method('request')
-            ->with('delete', 'https://api.stripe.com/v1/subscriptions/sub_cancel')
-            ->willReturn([json_encode([
-                'id' => 'sub_cancel',
-                'object' => 'subscription',
-                'status' => 'canceled',
-            ]), 200, []]);
+        $http->expects($this->exactly(2))->method('request')
+            ->willReturnCallback(function (string $verb, string $url, array $headers, array $params) use ($subscription) {
+                $this->assertSame('https://api.stripe.com/v1/subscriptions/sub_cancel', $url);
+                if ($verb === 'get') {
+                    return $subscription(false);
+                }
+                $this->assertSame('post', $verb);
+                $this->assertTrue((bool) $params['cancel_at_period_end']);
+                return $subscription(true);
+            });
         ApiRequestor::setHttpClient($http);
 
         // CLI execution raises this exception instead of issuing the final redirect.
         $this->assertSame('redirecterrordetected', $this->cancel($method, 'valid'));
-        $this->assert_subscription_state('canceled', false);
+        $this->assert_subscription_state('active', true);
     }
 
     /**

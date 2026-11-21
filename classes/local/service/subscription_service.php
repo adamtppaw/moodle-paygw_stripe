@@ -620,7 +620,7 @@ class subscription_service {
                 get_string('customsubscriptioninterval:' . $price->recurring->interval, 'paygw_stripe');
             // WSB Merito: cancelled at the end of the paid period – still active but will not renew. Show when access
             // ends and offer to resume instead of cancelling again.
-            if ($subscription->status !== 'canceled' && !empty($subscription->cancel_at_period_end)) {
+            if (($subscription->status ?? null) !== 'canceled' && !empty($subscription->cancel_at_period_end)) {
                 $resumelink = new moodle_url(
                     '/payment/gateway/stripe/subscriptions.php',
                     ['action' => 'resume', 'subscriptionid' => $moodlesub->id, 'sesskey' => sesskey()]
@@ -642,7 +642,7 @@ class subscription_service {
             return [
                 s($product->name),
                 $fee,
-                $subscription->status !== 'canceled' ? userdate(self::period_end($subscription)) : '–',
+                ($subscription->status ?? null) !== 'canceled' ? userdate(self::period_end($subscription)) : '–',
                 get_string('subscriptionstatus:' . $moodlesub->status, 'paygw_stripe'),
                 $moodlesub->status != 'canceled' ?
                     \html_writer::link($portallink, get_string('updatepaymentmethod', 'paygw_stripe')) : '',
