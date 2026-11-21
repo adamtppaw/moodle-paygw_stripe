@@ -137,10 +137,8 @@ class checkout_service {
 
         $stripelocale = $this->localeservice->get_stripe_locale_for_user($USER);
 
-        $paymentmethodconfigurationid = $config->paymentmethodconfiguration;
-        if ($paymentmethodconfigurationid == null) {
-            $paymentmethodconfigurationid = $this->paymentmethodconfigservice->get_default_payment_method_config_id();
-        }
+        // WSB Merito: Dashboard methods (payment method configuration) or the methods selected on the account.
+        $paymentmethodparams = wsb_payment_methods::session_params($config, $this->paymentmethodconfigservice);
 
         $session = $this->stripe->checkout->sessions->create([
             'success_url' => $CFG->wwwroot . '/payment/gateway/stripe/process.php?component=' . $component . '&paymentarea=' .
@@ -149,7 +147,7 @@ class checkout_service {
                 $paymentarea . '&itemid=' . $itemid,
             'locale' => $stripelocale,
             'managed_payments' => ['enabled' => false],
-            'payment_method_configuration' => $paymentmethodconfigurationid,
+            ...$paymentmethodparams,
             'payment_method_options' => [
                 'wechat_pay' => [
                     'client' => "web",

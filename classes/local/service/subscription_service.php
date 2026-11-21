@@ -306,10 +306,8 @@ class subscription_service {
 
         $stripelocale = $this->localeservice->get_stripe_locale_for_user($USER);
 
-        $paymentmethodconfigurationid = $config->paymentmethodconfiguration;
-        if ($paymentmethodconfigurationid == null) {
-            $paymentmethodconfigurationid = $this->paymentmethodconfigservice->get_default_payment_method_config_id();
-        }
+        // WSB Merito: Dashboard methods (payment method configuration) or the methods selected on the account.
+        $paymentmethodparams = wsb_payment_methods::session_params($config, $this->paymentmethodconfigservice);
 
         $subscriptiondata = [
             'metadata' => wsb_metadata::payment($buyer, $component, $paymentarea, $itemid),
@@ -337,7 +335,7 @@ class subscription_service {
                 $paymentarea . '&itemid=' . $itemid,
             'locale' => $stripelocale,
             'managed_payments' => ['enabled' => false],
-            'payment_method_configuration' => $paymentmethodconfigurationid,
+            ...$paymentmethodparams,
             'mode' => 'subscription',
             'line_items' => [[
                 'price' => $price,

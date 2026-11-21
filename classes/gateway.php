@@ -131,7 +131,8 @@ class gateway extends \core_payment\gateway {
         $mform->addElement('advcheckbox', 'usedynamicpaymentmethods',
             get_string('usedynamicpaymentmethods', 'paygw_stripe'),
             get_string('usedynamicpaymentmethods_desc', 'paygw_stripe'));
-        $mform->setDefault('usedynamicpaymentmethods', false);
+        // WSB Merito: on by default – the upstream behaviour (payment method configuration) and production setting.
+        $mform->setDefault('usedynamicpaymentmethods', true);
         $mform->addHelpButton('usedynamicpaymentmethods', 'usedynamicpaymentmethods', 'paygw_stripe');
 
         $paymentmethods = [
@@ -155,6 +156,10 @@ class gateway extends \core_payment\gateway {
         $method->setMultiple(true);
         // The manual list is irrelevant when dynamic payment methods are used, so hide it.
         $mform->hideIf('paymentmethods', 'usedynamicpaymentmethods', 'checked');
+        // The payment method configuration applies only to dynamic payment methods.
+        if ($mform->elementExists('paymentmethodconfiguration')) {
+            $mform->hideIf('paymentmethodconfiguration', 'usedynamicpaymentmethods', 'notchecked');
+        }
 
         // Tax handling mode. The three modes are mutually exclusive:
         //  - none:      the plugin adds no tax.
@@ -310,7 +315,9 @@ class gateway extends \core_payment\gateway {
         array &$errors
     ): void {
         global $DB;
-        if ($data->enabled && (empty($data->apikey) || empty($data->secretkey))) {
+        // WSB Merito: without dynamic payment methods at least one method has to be selected.
+        $usedynamic = !isset($data->usedynamicpaymentmethods) || !empty($data->usedynamicpaymentmethods);
+        if ($data->enabled && (empty($data->apikey) || empty($data->secretkey) || (!$usedynamic && empty($data->paymentmethods)))) {
             $errors['enabled'] = get_string('gatewaycannotbeenabled', 'payment');
         }
 
