@@ -123,4 +123,65 @@ final class product_pricing_service_test extends stripe_testcase {
             'interval_count' => 1,
         ]);
     }
+
+    /**
+     * Provide the default tax behaviour setting and the expected behaviour of an existing price without one.
+     *
+     * @return array
+     */
+    public static function default_tax_behavior_provider(): array {
+        return ['exclusive' => ['exclusive'], 'inclusive' => ['inclusive']];
+    }
+
+    /**
+     * An existing price without a tax behaviour gets the configured default once automatic tax is on.
+     *
+     * @dataProvider default_tax_behavior_provider
+     * @param string $behavior Configured default tax behaviour
+     */
+    public function test_existing_price_gets_configured_default_tax_behavior(string $behavior): void {
+        global $DB;
+
+        $DB->insert_record('paygw_stripe_products', (object)[
+            'component' => 'mod_example',
+            'paymentarea' => 'access',
+            'itemid' => 42,
+            'productid' => 'prod_tax',
+        ]);
+        $products = $this->mock_stripe_service('products', ProductService::class);
+        $products->method('retrieve')->with('prod_tax')->willReturn(Product::constructFrom([
+            'id' => 'prod_tax',
+            'object' => 'product',
+            'active' => true,
+            'name' => 'Purchase mod_example / access / 42',
+        ]));
+        $prices = $this->mock_stripe_service('prices', PriceService::class);
+        $prices->method('all')->with(['product' => 'prod_tax'])->willReturn(\Stripe\Collection::constructFrom([
+            'object' => 'list',
+            'data' => [[
+                'id' => 'price_tax',
+                'object' => 'price',
+                'active' => true,
+                'currency' => 'usd',
+                'unit_amount' => 1000,
+                'type' => 'one_time',
+                'tax_behavior' => 'unspecified',
+            ]],
+        ]));
+        $prices->expects($this->once())->method('update')->with('price_tax', ['tax_behavior' => $behavior])
+            ->willReturn(Price::constructFrom(['id' => 'price_tax', 'tax_behavior' => $behavior]));
+        $service = new product_pricing_service($this->client);
+
+        $config = (object)['enableautomatictax' => 1, 'defaulttaxbehavior' => $behavior];
+        [, $price] = $service->create_product_and_price(
+            $config,
+            new \core_payment\local\entities\payable(10.00, 'USD', 1),
+            'ignored',
+            10.00,
+            'mod_example',
+            'access',
+            '42'
+        );
+        $this->assertSame($behavior, $price->tax_behavior);
+    }
 }
