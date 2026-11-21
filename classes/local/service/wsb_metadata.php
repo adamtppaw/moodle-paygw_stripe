@@ -72,7 +72,7 @@ final class wsb_metadata {
             $prefix = $polish ? 'Rejestracja na ' : 'Registration for ';
             $previous = force_current_language($courselang !== '' ? $courselang : ($CFG->lang ?? ''));
             try {
-                $fullname = format_string($course->fullname, true, ['context' => \context_course::instance($course->id)]);
+                $fullname = self::plain($course->fullname, \context_course::instance($course->id));
             } finally {
                 force_current_language($previous);
             }
@@ -114,10 +114,10 @@ final class wsb_metadata {
                     $metadata['moodle_course_idnumber'] = (string) $course->idnumber;
                 }
                 if (trim((string) $course->fullname) !== '') {
-                    $metadata['moodle_course_fullname'] = format_string($course->fullname, true, ['context' => $context]);
+                    $metadata['moodle_course_fullname'] = self::plain($course->fullname, $context);
                 }
                 if (trim((string) $course->shortname) !== '') {
-                    $metadata['moodle_course_shortname'] = format_string($course->shortname, true, ['context' => $context]);
+                    $metadata['moodle_course_shortname'] = self::plain($course->shortname, $context);
                 }
                 $metadata['moodle_course_url'] = (new moodle_url('/course/view.php', ['id' => $course->id]))->out(false);
             }
@@ -210,6 +210,17 @@ final class wsb_metadata {
             $desired['moodle_itemid'] = '';
         }
         return self::needs_update($existing, $desired) ? $desired : null;
+    }
+
+    /**
+     * Course name as plain text: filters applied (e.g. multilang), no HTML entities ("&" stays "&").
+     *
+     * @param string $text
+     * @param \context $context
+     * @return string
+     */
+    private static function plain(string $text, \context $context): string {
+        return trim(html_to_text(format_string($text, true, ['context' => $context]), 0, false));
     }
 
     /**
