@@ -142,6 +142,39 @@ class stripe_helper {
     }
 
     /**
+     * Deliver a paid one-time Checkout session exactly once (WSB Merito).
+     *
+     * process.php (the buyer returns from Stripe) and the checkout.session.completed webhook (the buyer closed the
+     * tab) can both deliver the same session, possibly at the same moment. A lock per session and the delivered flag
+     * make the second one a no-op, so there is never a second payment record or enrolment.
+     *
+     * @param string $sessionid Checkout session ID
+     * @param string $component
+     * @param string $paymentarea
+     * @param int $itemid
+     * @param int $userid
+     * @return bool True if this call delivered the purchase, false if it had been delivered already.
+     */
+    public function deliver_checkout_once(string $sessionid, string $component, string $paymentarea, int $itemid,
+            int $userid): bool {
+        $lock = \core\lock\lock_config::get_lock_factory('paygw_stripe')->get_lock('checkout_' . hash('sha256', $sessionid), 10);
+        if (!$lock) {
+            throw new \moodle_exception('locktimeout');
+        }
+        try {
+            if ($this->checkoutservice->is_delivered($sessionid)) {
+                return false;
+            }
+            $this->checkoutservice->save_payment_status($sessionid);
+            $this->deliver_course($component, $paymentarea, $itemid, $userid);
+            $this->checkoutservice->mark_delivered($sessionid);
+            return true;
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
      * Process stripe payment events
      *
      * @param Event $event
@@ -155,6 +188,11 @@ class stripe_helper {
         }
 
         switch ($event->type) {
+            // WSB Merito: a completed Checkout session is delivered by the webhook as well, so a buyer who closes the
+            // tab after paying (or loses the connection) still gets access. Delivery is shared with process.php and
+            // happens once, whichever comes first.
+            case 'checkout.session.completed':
+                return $this->deliver_completed_session($event->data->object->id, $metadata);
             // Process an async payment event.
             // Deliver the course if payment was successful or notify the user the payment failed.
             case 'checkout.session.async_payment_succeeded':
@@ -180,22 +218,11 @@ class stripe_helper {
                     return false;
                 }
 
-                // Webhook retry already processed this session.
-                if ($sessionrecord->delivered) {
+                // WSB Merito: delivered once, under the same lock as process.php and checkout.session.completed;
+                // a webhook retry or an earlier delivery makes this a no-op.
+                if (!$this->deliver_checkout_once($session->id, $metadata['component'], $metadata['paymentarea'],
+                        (int) $metadata['itemid'], $sessionrecord->userid)) {
                     return true;
-                }
-
-                $this->checkoutservice->save_payment_status($session->id); // Update saved intent status.
-
-                // Deliver course.
-                $this->deliver_course(
-                    $metadata['component'],
-                    $metadata['paymentarea'],
-                    $metadata['itemid'],
-                    $sessionrecord->userid
-                );
-                if ($session->mode != 'subscription') {
-                    $this->checkoutservice->mark_delivered($session->id);
                 }
 
                 // Notify user payment was successful.
@@ -228,6 +255,60 @@ class stripe_helper {
             default:
                 return false;
         }
+        return true;
+    }
+
+    /**
+     * Deliver a completed Checkout session from the webhook (WSB Merito).
+     *
+     * @param string $sessionid
+     * @param array $metadata component, paymentarea, itemid
+     * @return bool False when the session is not ours (another site, no buyer, not bound to this purchase).
+     * @throws ApiErrorException|\dml_exception
+     */
+    private function deliver_completed_session(string $sessionid, array $metadata): bool {
+        global $CFG, $DB;
+
+        $session = $this->stripe->checkout->sessions->retrieve($sessionid);
+        // Events go to every endpoint of the Stripe account: skip sessions of another Moodle site.
+        $site = $session->metadata->moodle_site ?? null;
+        if ($site !== null && $site !== $CFG->wwwroot) {
+            return false;
+        }
+        $userid = (int) ($session->metadata->userid ?? 0);
+        if (!$userid || !$DB->record_exists('user', ['id' => $userid, 'deleted' => 0])) {
+            return false;
+        }
+        $component = (string) $metadata['component'];
+        $paymentarea = (string) $metadata['paymentarea'];
+        $itemid = (int) $metadata['itemid'];
+
+        if ($session->mode === 'subscription') {
+            if (!$this->subscriptionservice->is_session_bound_to_request($session->id, $userid, $component, $paymentarea,
+                    $itemid)) {
+                return false;
+            }
+            try {
+                $this->subscriptionservice->fulfil_subscription($session->id, $userid, $component, $paymentarea, $itemid);
+            } catch (\moodle_exception $e) {
+                // Same rule as process.php: no access for a subscription that is not active (incomplete payment).
+                debugging('paygw_stripe: subscription session ' . $session->id . ' not delivered: ' . $e->errorcode,
+                    DEBUG_DEVELOPER);
+            }
+            return true;
+        }
+        if ($session->mode !== 'payment') {
+            return false;
+        }
+        if (!$this->checkoutservice->is_session_bound_to_request($session->id, $userid, $component, $paymentarea, $itemid)) {
+            return false;
+        }
+        if (!in_array($session->payment_status, ['paid', 'no_payment_required'], true)) {
+            // Delayed payment methods: delivered on checkout.session.async_payment_succeeded.
+            $this->checkoutservice->save_payment_status($session->id);
+            return true;
+        }
+        $this->deliver_checkout_once($session->id, $component, $paymentarea, $itemid, $userid);
         return true;
     }
 
