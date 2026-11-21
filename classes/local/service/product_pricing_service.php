@@ -244,8 +244,10 @@ class product_pricing_service {
             }
             // Set tax behavior if not set already.
             if ($config->enableautomatictax == 1 && (!isset($price->tax_behavior) || $price->tax_behavior === 'unspecified')) {
-                $price->updateAttributes(['tax_behavior' => $config->tax_behavior ?? 'inclusive']);
-                $price = $this->stripe->prices->update($price->id, ['tax_behavior' => $config->tax_behavior ?? 'inclusive']);
+                // The setting is "defaulttaxbehavior"; "tax_behavior" is not a gateway setting, so an exclusive default
+                // was never applied to existing prices.
+                $behavior = $config->defaulttaxbehavior ?? 'inclusive';
+                $price = $this->stripe->prices->update($price->id, ['tax_behavior' => $behavior]);
             }
         }
         // WSB Merito: moodle_* metadata kept current in the same update as the name (only when stale).
