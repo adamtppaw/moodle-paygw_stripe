@@ -134,10 +134,13 @@ class customer_service {
             $record = $this->customerrepository->find_by_userid((int)$user->id);
             if (!$record || !$record->billingmanaged) {
                 $details['email'] = $user->email;
-                $details['name'] = fullname($user);
+                // WSB Merito: keep the name entered in Checkout (often a company name for its invoices); the Moodle
+                // full name only fills an empty one. The buyer is identified by e-mail and moodle_* metadata.
+                if (empty($customer->name)) {
+                    $details['name'] = fullname($user);
+                }
             }
-            // WSB Merito: moodle_* metadata follows the Moodle profile (only when stale). Keeping a company name
-            // entered in Checkout is decided together with invoice data in group 11.6.
+            // WSB Merito: moodle_* metadata follows the Moodle profile (only when stale).
             $metadata = wsb_metadata::customer($user);
             if (wsb_metadata::needs_update($customer->metadata ?? null, $metadata)) {
                 $details['metadata'] = $metadata;

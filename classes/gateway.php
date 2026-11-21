@@ -205,7 +205,9 @@ class gateway extends \core_payment\gateway {
             get_string('collectbillingaddress', 'paygw_stripe'),
             get_string('collectbillingaddress_desc', 'paygw_stripe')
         );
-        $mform->setDefault('collectbillingaddress', false);
+        // WSB Merito: invoices for buyers need the billing address – on by default (also for configurations saved before
+        // the option existed, see checkout_service).
+        $mform->setDefault('collectbillingaddress', true);
 
         $mform->addElement('select', 'type', get_string('paymenttype', 'paygw_stripe'), [
             'onetime' => get_string('paymenttype:onetime', 'paygw_stripe'),
@@ -239,7 +241,8 @@ class gateway extends \core_payment\gateway {
             get_string('invoicecreation', 'paygw_stripe'),
             get_string('invoicecreation_desc', 'paygw_stripe')
         );
-        $mform->setDefault('invoicecreation', false);
+        // WSB Merito: every one-time payment gets an invoice (MER-39) – on by default.
+        $mform->setDefault('invoicecreation', true);
         $mform->hideIf('invoicecreation', 'type', 'neq', 'onetime');
 
         $mform->addElement('select', 'subscriptioninterval', get_string('subscriptioninterval', 'paygw_stripe'), [

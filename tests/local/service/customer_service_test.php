@@ -62,4 +62,45 @@ final class customer_service_test extends stripe_testcase {
         $this->assertNull($service->get_customer((int)$user->id));
         $this->assertFalse($DB->record_exists('paygw_stripe_customers', ['userid' => $user->id]));
     }
+
+    /**
+     * Provide the customer's name in Stripe and whether the Moodle full name is sent.
+     *
+     * @return array
+     */
+    public static function customer_name_provider(): array {
+        return [
+            'company name from Checkout is kept' => ['ACME Sp. z o.o.', false],
+            'empty name is filled' => ['', true],
+        ];
+    }
+
+    /**
+     * WSB Merito: a later purchase does not overwrite the name entered in Checkout (a company name on invoices).
+     *
+     * @dataProvider customer_name_provider
+     * @param string $stripename Name stored in Stripe
+     * @param bool $sendsname Whether update_customer_details() sends the Moodle full name
+     */
+    public function test_update_customer_details_keeps_checkout_name(string $stripename, bool $sendsname): void {
+        $user = $this->getDataGenerator()->create_user(['firstname' => 'Jan', 'lastname' => 'Kowalski',
+            'email' => 'jan@example.com']);
+        $customer = \Stripe\Customer::constructFrom(['id' => 'cus_wsb', 'name' => $stripename, 'metadata' => []]);
+        $sent = null;
+        $customers = $this->mock_stripe_service('customers', CustomerService::class);
+        $customers->expects($this->once())->method('update')->with('cus_wsb')
+            ->willReturnCallback(function (string $id, array $details) use (&$sent, $customer) {
+                $sent = $details;
+                return $customer;
+            });
+
+        (new customer_service($this->client))->update_customer_details($customer, $user);
+
+        $this->assertSame('jan@example.com', $sent['email']);
+        if ($sendsname) {
+            $this->assertSame('Jan Kowalski', $sent['name']);
+        } else {
+            $this->assertArrayNotHasKey('name', $sent);
+        }
+    }
 }

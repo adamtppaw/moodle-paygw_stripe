@@ -163,14 +163,19 @@ class checkout_service {
             'automatic_tax' => [
                 'enabled' => $config->enableautomatictax == 1,
             ],
-            'billing_address_collection' => ($config->collectbillingaddress ?? 0) == 1 ? 'required' : 'auto',
+            // WSB Merito: an absent setting (configuration saved before the option existed) means on – invoices with
+            // the billing address and tax ID for every purchase, as in the WSB version (MER-36, MER-39).
+            'billing_address_collection' => ($config->collectbillingaddress ?? 1) == 1 ? 'required' : 'auto',
+            'tax_id_collection' => ['enabled' => true],
             'invoice_creation' => [
-                'enabled' => ($config->invoicecreation ?? 0) == 1,
+                'enabled' => ($config->invoicecreation ?? 1) == 1,
                 'invoice_data' => [
                     'issuer' => [
                         'type' => 'self',
                     ],
                     'description' => $description,
+                    // An invoice inherits no metadata from the payment that created it.
+                    'metadata' => wsb_metadata::payment($buyer, $component, $paymentarea, $itemid),
                 ],
             ],
             'customer' => $customer->id,
@@ -179,7 +184,10 @@ class checkout_service {
                 'metadata' => wsb_metadata::payment($buyer, $component, $paymentarea, $itemid),
             ],
             'allow_promotion_codes' => $config->allowpromotioncodes == 1,
+            // WSB Merito: the name entered in Checkout (e.g. a company name with its tax ID) is stored on the customer
+            // and used on invoices; required by tax_id_collection for an existing customer.
             'customer_update' => [
+                'name' => 'auto',
                 'address' => 'auto',
             ],
             'expires_at' => time() + min($CFG->sessiontimeout, 24 * 60 * 60),

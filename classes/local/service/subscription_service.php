@@ -341,12 +341,15 @@ class subscription_service {
             'automatic_tax' => [
                 'enabled' => $config->enableautomatictax == 1,
             ],
-            'billing_address_collection' => ($config->collectbillingaddress ?? 0) == 1 ? 'required' : 'auto',
+            // WSB Merito: absent setting = on (see checkout_service); tax ID for company invoices.
+            'billing_address_collection' => ($config->collectbillingaddress ?? 1) == 1 ? 'required' : 'auto',
+            'tax_id_collection' => ['enabled' => true],
             'allow_promotion_codes' => $config->allowpromotioncodes == 1,
             'subscription_data' => $subscriptiondata,
             'customer' => $customer->id,
             'metadata' => wsb_metadata::payment($buyer, $component, $paymentarea, $itemid),
             'customer_update' => [
+                'name' => 'auto',
                 'address' => 'auto',
             ],
             'expires_at' => time() + min($CFG->sessiontimeout, 24 * 60 * 60),

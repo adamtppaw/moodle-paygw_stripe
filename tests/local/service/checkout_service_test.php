@@ -180,9 +180,13 @@ final class checkout_service_test extends stripe_testcase {
             '42'
         );
 
-        $this->assertSame('auto', $payload['billing_address_collection']);
+        // WSB Merito: configurations saved before these options existed keep invoices with the billing address and
+        // the tax ID (the behaviour of the WSB version in production).
+        $this->assertSame('required', $payload['billing_address_collection']);
         $this->assertFalse($payload['automatic_tax']['enabled']);
-        $this->assertFalse($payload['invoice_creation']['enabled']);
+        $this->assertTrue($payload['invoice_creation']['enabled']);
+        $this->assertTrue($payload['tax_id_collection']['enabled']);
+        $this->assertSame(['name' => 'auto', 'address' => 'auto'], $payload['customer_update']);
         $this->assertFalse($payload['allow_promotion_codes']);
         $this->assertSame('pmc_default', $payload['payment_method_configuration']);
         $this->assertSame('cus_existing', $payload['customer']);
