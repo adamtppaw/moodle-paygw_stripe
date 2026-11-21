@@ -977,7 +977,8 @@ final class invoice_flow_test extends invoice_testcase {
         $customers = new customer_service($this->client);
         $customers->update_customer_details($customers->get_customer($this->userid), $USER);
         $customerid = $this->repository->find_by_id($id)->customerid;
-        $this->assertSame(fullname($USER), $this->http->customers[$customerid]['name']);
+        // WSB Merito: the billing name (company) is kept on the customer – only an empty name is filled from Moodle.
+        $this->assertSame('Example GmbH', $this->http->customers[$customerid]['name']);
         $this->assertSame($USER->email, $this->http->customers[$customerid]['email']);
         $this->assertSame('billing@example.test', $this->http->invoices['in_1']['customer_email']);
 
