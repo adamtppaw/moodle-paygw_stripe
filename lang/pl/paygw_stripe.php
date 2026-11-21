@@ -93,6 +93,7 @@ $string['cancelsubscriptionconfirmuntil'] = 'Czy na pewno chcesz anulować tę s
 $string['resumesubscription'] = 'Wznów';
 $string['subscriptioncancelscheduled'] = 'Subskrypcja zakończy się {$a}. Do tego dnia masz dostęp do kursów i możesz ją wznowić na tej stronie.';
 $string['subscriptionendson'] = 'Anulowana – aktywna do {$a}';
+$string['subscriptioninvalid'] = 'Nie masz uprawnień do tej subskrypcji albo ona nie istnieje. W razie pytań skontaktuj się z administratorem serwisu.';
 $string['subscriptionnotresumable'] = 'Ta subskrypcja już się zakończyła i nie można jej wznowić.';
 $string['subscriptionresumed'] = 'Subskrypcja została wznowiona i odnowi się {$a}.';
 $string['subscriptionssubheading'] = 'Na tej stronie znajdziesz wykupione subskrypcje. Możesz je tutaj anulować – anulowana subskrypcja działa do końca opłaconego okresu i do tego dnia masz dostęp do kursów.';

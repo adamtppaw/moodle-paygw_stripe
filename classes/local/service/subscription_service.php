@@ -649,6 +649,9 @@ class subscription_service {
                 $moodlesub->status != 'canceled' ? \html_writer::link($cancellink, get_string('cancel', 'paygw_stripe')) : '',
             ];
         } catch (ApiErrorException $err) {
+            // WSB Merito: skip the row instead of breaking the page, but leave a trace for the administrator.
+            error_log('paygw_stripe: cannot load subscription ' . $moodlesub->subscriptionid . ' for the list: ' .
+                $err->getMessage());
             return null;
         }
     }
