@@ -23,6 +23,7 @@
  */
 
 use core_payment\helper;
+use paygw_stripe\local\service\purchase_availability;
 use paygw_stripe\local\service\purchase_description;
 use paygw_stripe\local\service\invoice_promotion_choices;
 use paygw_stripe\local\service\invoice_promotion_request;
@@ -32,7 +33,7 @@ use paygw_stripe\stripe_helper;
 require_once(__DIR__ . '/../../../config.php');
 require_once(__DIR__ . '/.extlib/stripe-php/init.php');
 
-global $PAGE, $OUTPUT;
+global $PAGE, $OUTPUT, $USER;
 
 require_login();
 
@@ -43,6 +44,8 @@ $description = purchase_description::get($component, $paymentarea, $itemid);
 $sessionid = optional_param('session_id', null, PARAM_TEXT);
 
 $config = (object) helper::get_gateway_configuration($component, $paymentarea, $itemid, 'stripe');
+// Before anything is created in Stripe: the user must be able to get what they pay for.
+purchase_availability::require_available($component, $paymentarea, $itemid, (int) $USER->id);
 $payable = helper::get_payable($component, $paymentarea, $itemid);
 $surcharge = helper::get_gateway_surcharge('stripe');
 
