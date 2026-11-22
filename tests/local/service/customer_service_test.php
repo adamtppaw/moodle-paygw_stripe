@@ -32,6 +32,8 @@ defined('MOODLE_INTERNAL') || die();
 use paygw_stripe\tests\fixtures\stripe_testcase;
 use Stripe\Exception\InvalidRequestException;
 use Stripe\Service\CustomerService;
+use Stripe\Service\BillingPortal\BillingPortalServiceFactory;
+use Stripe\Service\BillingPortal\SessionService as PortalSessionService;
 
 require_once(__DIR__ . '/../../fixtures/stripe_testcase.php');
 
@@ -102,5 +104,44 @@ final class customer_service_test extends stripe_testcase {
         } else {
             $this->assertArrayNotHasKey('name', $sent);
         }
+    }
+
+    /**
+     * WSB Merito: the profile link opens the Stripe customer portal for a known customer.
+     */
+    public function test_get_customer_portal_url_for_known_customer(): void {
+        global $DB;
+
+        $user = $this->getDataGenerator()->create_user();
+        $DB->insert_record('paygw_stripe_customers', (object)[
+            'userid' => $user->id,
+            'customerid' => 'cus_portal',
+        ]);
+        $portal = $this->mock_stripe_service('billingPortal', BillingPortalServiceFactory::class);
+        $sessions = $this->createMock(PortalSessionService::class);
+        $portal->method('__get')->with('sessions')->willReturn($sessions);
+        $payload = [];
+        $sessions->expects($this->once())->method('create')
+            ->willReturnCallback(function (array $params) use (&$payload): \Stripe\BillingPortal\Session {
+                $payload = $params;
+                return \Stripe\BillingPortal\Session::constructFrom(['id' => 'bps_1', 'url' => 'https://example.test/portal']);
+            });
+        $service = new customer_service($this->client);
+
+        $this->assertSame('https://example.test/portal', $service->get_customer_portal_url((int)$user->id));
+        $this->assertSame('cus_portal', $payload['customer']);
+        $this->assertStringContainsString('/user/profile.php', $payload['return_url']);
+    }
+
+    /**
+     * WSB Merito: no portal link for a user who never bought anything.
+     */
+    public function test_get_customer_portal_url_without_customer(): void {
+        $user = $this->getDataGenerator()->create_user();
+        $this->mock_stripe_service('billingPortal', BillingPortalServiceFactory::class)
+            ->expects($this->never())->method('__get');
+        $service = new customer_service($this->client);
+
+        $this->assertNull($service->get_customer_portal_url((int)$user->id));
     }
 }
