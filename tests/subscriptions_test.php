@@ -168,14 +168,17 @@ final class subscriptions_test extends \advanced_testcase {
      */
     #[DataProvider('valid_requests_provider')]
     public function test_valid_sesskey_cancels_subscription(string $method): void {
+        // The state is read first, so a subscription that already ended in Stripe is not cancelled again.
         $http = $this->createMock(ClientInterface::class);
-        $http->expects($this->once())->method('request')
-            ->with('delete', 'https://api.stripe.com/v1/subscriptions/sub_cancel')
-            ->willReturn([json_encode([
-                'id' => 'sub_cancel',
-                'object' => 'subscription',
-                'status' => 'canceled',
-            ]), 200, []]);
+        $http->expects($this->exactly(2))->method('request')
+            ->willReturnCallback(function (string $verb, string $url): array {
+                $this->assertSame('https://api.stripe.com/v1/subscriptions/sub_cancel', $url);
+                return [json_encode([
+                    'id' => 'sub_cancel',
+                    'object' => 'subscription',
+                    'status' => $verb === 'get' ? 'active' : 'canceled',
+                ]), 200, []];
+            });
         ApiRequestor::setHttpClient($http);
 
         // CLI execution raises this exception instead of issuing the final redirect.
