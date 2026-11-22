@@ -104,7 +104,7 @@ class customer_service {
         $customer = $this->stripe->customers->create([
             'email' => $user->email,
             'name' => fullname($user),
-            'description' => get_string('customerdescription', 'paygw_stripe', $user->id),
+            'description' => get_string('customerdescriptionuser', 'paygw_stripe', $user->id),
             'preferred_locales' => [$stripelocale],
             'metadata' => wsb_metadata::customer($user),
         ]);
