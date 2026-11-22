@@ -412,21 +412,46 @@ class subscription_service {
     public function cancel_subscription(subscription $moodlesub, bool $cancelstripe = true) {
         global $DB;
 
-        if ($cancelstripe) {
+        // Read the current state first: a subscription already cancelled in Stripe (Dashboard, customer portal,
+        // failed renewals) or no longer existing there cannot be cancelled again – that call throws and leaves
+        // Moodle out of sync. Both cases are stored as cancelled and the user is unenrolled.
+        $subscription = $this->retrieve_subscription_or_null($moodlesub->subscriptionid);
+        if ($cancelstripe && $subscription && $subscription->status !== 'canceled') {
             $subscription = $this->stripe->subscriptions->cancel($moodlesub->subscriptionid);
-        } else {
-            $subscription = $this->stripe->subscriptions->retrieve($moodlesub->subscriptionid);
         }
+        $status = $subscription ? $subscription->status : 'canceled';
 
         $msub = $this->subscriptionrepository->find_by_subscriptionid($moodlesub->subscriptionid);
-        $this->subscriptionrepository->update_status($msub->id, $subscription->status);
+        $this->subscriptionrepository->update_status($msub->id, $status);
+        if ($status !== 'canceled') {
+            return;
+        }
 
         $product = $this->productrepository->find_by_productid($moodlesub->productid);
-        if ($product->component == 'enrol_fee') {
+        if ($product && $product->component == 'enrol_fee') {
             // A course was the product. Let's unenrol the user.
             $instance = $DB->get_record('enrol', ['enrol' => 'fee', 'id' => $product->itemid], '*', MUST_EXIST);
             $plugin = enrol_get_plugin('fee');
             $plugin->unenrol_user($instance, $moodlesub->userid);
+        }
+    }
+
+    /**
+     * Retrieve a subscription from Stripe, or null when it no longer exists there.
+     *
+     * @param string $subscriptionid
+     * @return \Stripe\Subscription|null
+     * @throws ApiErrorException Errors other than a missing subscription
+     */
+    private function retrieve_subscription_or_null(string $subscriptionid): ?\Stripe\Subscription {
+        try {
+            return $this->stripe->subscriptions->retrieve($subscriptionid);
+        } catch (\Stripe\Exception\InvalidRequestException $e) {
+            if ($e->getStripeCode() !== 'resource_missing') {
+                throw $e;
+            }
+            debugging('paygw_stripe: subscription ' . $subscriptionid . ' not found in Stripe.', DEBUG_DEVELOPER);
+            return null;
         }
     }
 

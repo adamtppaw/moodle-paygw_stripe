@@ -38,6 +38,7 @@ use Stripe\Customer;
 use Stripe\Product;
 use Stripe\Price;
 use Stripe\Subscription;
+use Stripe\Exception\InvalidRequestException;
 use Stripe\Service\SubscriptionService;
 use Stripe\Service\CustomerService;
 use Stripe\Service\ProductService;
@@ -261,9 +262,11 @@ final class subscription_service_test extends stripe_testcase {
         ]);
 
         $subscriptions = $this->mock_stripe_service('subscriptions', SubscriptionService::class);
-        $subscriptions->expects($this->once())->method($cancelstripe ? 'cancel' : 'retrieve')->with('sub_cancel_1')
+        // The state is always read first, so an already ended subscription is not cancelled again.
+        $subscriptions->expects($this->once())->method('retrieve')->with('sub_cancel_1')
+            ->willReturn(Subscription::constructFrom(['id' => 'sub_cancel_1', 'status' => $cancelstripe ? 'active' : 'canceled']));
+        $subscriptions->expects($cancelstripe ? $this->once() : $this->never())->method('cancel')->with('sub_cancel_1')
             ->willReturn(Subscription::constructFrom(['id' => 'sub_cancel_1', 'status' => 'canceled']));
-        $subscriptions->expects($this->never())->method($cancelstripe ? 'retrieve' : 'cancel');
         $service = new subscription_service($this->client);
 
         $moodlesub = new subscription_model(
@@ -280,6 +283,89 @@ final class subscription_service_test extends stripe_testcase {
         $updated = $DB->get_record('paygw_stripe_subscriptions', ['id' => $subid], '*', MUST_EXIST);
         $this->assertSame('canceled', $updated->status);
         $this->assertGreaterThan(0, $productid);
+    }
+
+    /**
+     * Store a subscription for a fee enrolment and enrol the user.
+     *
+     * @param string $subscriptionid
+     * @return array [user, enrol instance, subscription model]
+     */
+    private function enrolled_fee_subscription(string $subscriptionid): array {
+        global $DB;
+        set_config('enrol_plugins_enabled', 'manual,fee');
+        $user = $this->getDataGenerator()->create_user();
+        $course = $this->getDataGenerator()->create_course();
+        $plugin = enrol_get_plugin('fee');
+        $instance = $DB->get_record('enrol', ['id' => $plugin->add_instance($course, ['cost' => 10, 'currency' => 'USD'])]);
+        $plugin->enrol_user($instance, $user->id);
+        $DB->insert_record('paygw_stripe_products', (object)[
+            'component' => 'enrol_fee',
+            'paymentarea' => 'fee',
+            'itemid' => $instance->id,
+            'productid' => 'prod_' . $subscriptionid,
+        ]);
+        $id = $DB->insert_record('paygw_stripe_subscriptions', (object)[
+            'userid' => $user->id,
+            'subscriptionid' => $subscriptionid,
+            'customerid' => 'cus_' . $subscriptionid,
+            'status' => 'active',
+            'productid' => 'prod_' . $subscriptionid,
+            'priceid' => 'price_' . $subscriptionid,
+        ]);
+        $moodlesub = new subscription_model((int)$id, (int)$user->id, $subscriptionid, 'cus_' . $subscriptionid, 'active',
+            'prod_' . $subscriptionid, 'price_' . $subscriptionid);
+        return [$user, $instance, $moodlesub];
+    }
+
+    /**
+     * Tests a subscription missing in Stripe is not cancelled again; Moodle is synced and the user unenrolled.
+     */
+    public function test_cancel_subscription_missing_in_stripe_unenrols(): void {
+        global $DB;
+        [$user, $instance, $moodlesub] = $this->enrolled_fee_subscription('sub_missing');
+        $subscriptions = $this->mock_stripe_service('subscriptions', SubscriptionService::class);
+        $subscriptions->method('retrieve')->willThrowException(
+            InvalidRequestException::factory('No such subscription', 404, null, null, null, 'resource_missing')
+        );
+        $subscriptions->expects($this->never())->method('cancel');
+
+        (new subscription_service($this->client))->cancel_subscription($moodlesub);
+
+        $this->assertDebuggingCalled();
+        $this->assertSame('canceled', $DB->get_field('paygw_stripe_subscriptions', 'status', ['id' => $moodlesub->id]));
+        $this->assertFalse($DB->record_exists('user_enrolments', ['enrolid' => $instance->id, 'userid' => $user->id]));
+    }
+
+    /**
+     * Tests a subscription already cancelled in Stripe is not cancelled again.
+     */
+    public function test_cancel_subscription_already_cancelled_in_stripe(): void {
+        global $DB;
+        [$user, $instance, $moodlesub] = $this->enrolled_fee_subscription('sub_ended');
+        $subscriptions = $this->mock_stripe_service('subscriptions', SubscriptionService::class);
+        $subscriptions->expects($this->once())->method('retrieve')->with('sub_ended')
+            ->willReturn(Subscription::constructFrom(['id' => 'sub_ended', 'status' => 'canceled']));
+        $subscriptions->expects($this->never())->method('cancel');
+
+        (new subscription_service($this->client))->cancel_subscription($moodlesub);
+
+        $this->assertSame('canceled', $DB->get_field('paygw_stripe_subscriptions', 'status', ['id' => $moodlesub->id]));
+        $this->assertFalse($DB->record_exists('user_enrolments', ['enrolid' => $instance->id, 'userid' => $user->id]));
+    }
+
+    /**
+     * Tests other Stripe errors are not hidden.
+     */
+    public function test_cancel_subscription_rethrows_other_errors(): void {
+        [, , $moodlesub] = $this->enrolled_fee_subscription('sub_error');
+        $subscriptions = $this->mock_stripe_service('subscriptions', SubscriptionService::class);
+        $subscriptions->method('retrieve')->willThrowException(
+            InvalidRequestException::factory('Invalid API key', 401, null, null, null, 'api_key_invalid')
+        );
+
+        $this->expectException(InvalidRequestException::class);
+        (new subscription_service($this->client))->cancel_subscription($moodlesub);
     }
 
     /**
