@@ -70,7 +70,14 @@ class product_pricing_service {
             $record = $this->productrepository->get_product_by_parts($component, $paymentarea, $itemid)
         ) {
             try {
-                return $this->stripe->products->retrieve($record->productid);
+                $product = $this->stripe->products->retrieve($record->productid);
+                // An archived (inactive) product cannot get new prices nor be sold in Checkout.
+                // Treat it as missing, so a new active product is created instead of failing the payment.
+                if (isset($product->active) && $product->active === false) {
+                    $this->productrepository->delete_product_by_parts($component, $paymentarea, $itemid);
+                    return null;
+                }
+                return $product;
             } catch (ApiErrorException $e) {
                 // Product exists in Moodle but not in stripe, possibly the keys were switched.
                 // Delete product for creation later.
