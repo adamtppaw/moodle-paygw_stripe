@@ -117,6 +117,50 @@ final class product_pricing_service_test extends stripe_testcase {
     }
 
     /**
+     * Tests get_product forgets an archived Stripe product, so a new active one is created.
+     */
+    public function test_get_product_forgets_archived_product(): void {
+        global $DB;
+
+        $DB->insert_record('paygw_stripe_products', (object)[
+            'component' => 'enrol_fee',
+            'paymentarea' => 'fee',
+            'itemid' => 101,
+            'productid' => 'prod_archived',
+        ]);
+
+        $products = $this->mock_stripe_service('products', ProductService::class);
+        $products->expects($this->once())->method('retrieve')->with('prod_archived')
+            ->willReturn(Product::constructFrom(['id' => 'prod_archived', 'active' => false]));
+        $service = new product_pricing_service($this->client);
+
+        $this->assertNull($service->get_product('enrol_fee', 'fee', '101'));
+        $this->assertFalse($DB->record_exists('paygw_stripe_products', ['itemid' => 101]));
+    }
+
+    /**
+     * Tests get_product keeps an active Stripe product.
+     */
+    public function test_get_product_keeps_active_product(): void {
+        global $DB;
+
+        $DB->insert_record('paygw_stripe_products', (object)[
+            'component' => 'enrol_fee',
+            'paymentarea' => 'fee',
+            'itemid' => 102,
+            'productid' => 'prod_active',
+        ]);
+
+        $products = $this->mock_stripe_service('products', ProductService::class);
+        $products->expects($this->once())->method('retrieve')->with('prod_active')
+            ->willReturn(Product::constructFrom(['id' => 'prod_active', 'active' => true]));
+        $service = new product_pricing_service($this->client);
+
+        $this->assertSame('prod_active', $service->get_product('enrol_fee', 'fee', '102')->id);
+        $this->assertTrue($DB->record_exists('paygw_stripe_products', ['itemid' => 102]));
+    }
+
+    /**
      * Tests get_price returns null if Stripe prices API errors.
      */
     public function test_get_price_returns_null_on_api_error(): void {
