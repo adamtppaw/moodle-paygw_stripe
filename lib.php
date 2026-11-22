@@ -33,7 +33,10 @@
  * @return void Return if the mobile web services setting is disabled or if not the current user.
  */
 function paygw_stripe_myprofile_navigation(\core_user\output\myprofile\tree $tree, $user, $iscurrentuser) {
-    if (!$iscurrentuser) {
+    global $USER, $DB;
+
+    // WSB Merito: nothing for a guest (no subscriptions, no Stripe customer).
+    if (!$iscurrentuser || !isloggedin() || isguestuser()) {
         return;
     }
 
@@ -49,4 +52,55 @@ function paygw_stripe_myprofile_navigation(\core_user\output\myprofile\tree $tre
         null,
         new moodle_url('/payment/gateway/stripe/subscriptions.php')
     ));
+
+    // WSB Merito: link to the Stripe customer portal (invoices and receipts). It only needs the user's Stripe customer
+    // and a key of the Stripe account, so any Stripe payment account will do. The account of the latest payment is
+    // tried first; its course or enrolment method may have been deleted since, so the other enabled accounts follow.
+    $portalurl = null;
+    if ($DB->record_exists('payments', ['userid' => $USER->id, 'gateway' => 'stripe'])) {
+        $configs = [];
+        foreach ($DB->get_records('payments', ['userid' => $USER->id, 'gateway' => 'stripe'], 'id DESC', '*', 0, 1) as $payment) {
+            try {
+                $configs[] = (object) \core_payment\helper::get_gateway_configuration(
+                    $payment->component,
+                    $payment->paymentarea,
+                    $payment->itemid,
+                    $payment->gateway
+                );
+            } catch (\moodle_exception $e) {
+                debugging('paygw_stripe: no gateway configuration for the latest payment ' . $payment->id . ': ' .
+                    $e->getMessage(), DEBUG_DEVELOPER);
+            }
+        }
+        $gateways = $DB->get_records_sql(
+            "SELECT pg.id, pg.config
+               FROM {payment_gateways} pg
+               JOIN {payment_accounts} pa ON pa.id = pg.accountid
+              WHERE pg.gateway = 'stripe' AND pg.enabled = 1 AND pa.enabled = 1 AND pa.archived = 0
+           ORDER BY pg.id"
+        );
+        foreach ($gateways as $gateway) {
+            $configs[] = (object) json_decode($gateway->config, true);
+        }
+        $tried = [];
+        foreach ($configs as $config) {
+            if (empty($config->secretkey) || isset($tried[$config->secretkey])) {
+                continue;
+            }
+            $tried[$config->secretkey] = true;
+            $factory = new \paygw_stripe\local\service\stripe_service_factory($config->apikey ?? '', $config->secretkey);
+            if ($portalurl = $factory->customer_service()->get_customer_portal_url((int) $USER->id)) {
+                break;
+            }
+        }
+    }
+    if ($portalurl) {
+        $tree->add_node(new core_user\output\myprofile\node(
+            'paygw_stripe',
+            'stripeinvoices',
+            get_string('stripeinvoices', 'paygw_stripe'),
+            null,
+            new moodle_url($portalurl)
+        ));
+    }
 }

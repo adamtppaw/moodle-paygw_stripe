@@ -212,4 +212,26 @@ class customer_service {
         }
         return $lock;
     }
+
+    /**
+     * A Stripe customer portal URL for the user's invoices and receipts, or null (WSB Merito).
+     *
+     * @param int $userid
+     * @return string|null Null when the user has no Stripe customer or Stripe refuses the portal session.
+     */
+    public function get_customer_portal_url(int $userid): ?string {
+        if (!$record = $this->customerrepository->find_by_userid($userid)) {
+            return null;
+        }
+        try {
+            $session = $this->stripe->billingPortal->sessions->create([
+                'customer' => $record->customerid,
+                'return_url' => (new \moodle_url('/user/profile.php'))->out(false),
+            ]);
+            return $session->url;
+        } catch (\Exception $e) {
+            debugging('paygw_stripe: customer portal error: ' . $e->getMessage(), DEBUG_DEVELOPER);
+            return null;
+        }
+    }
 }
