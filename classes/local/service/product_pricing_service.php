@@ -257,8 +257,10 @@ class product_pricing_service {
      */
     public function get_unit_amount(float $cost, string $currency): float {
         if (in_array(strtoupper($currency), gateway::get_zero_decimal_currencies())) {
-            return $cost;
+            return round($cost);
         }
-        return $cost * 100;
+        // Whole minor units: 19.99 * 100 is 1998.9999..., which never equals the stored price
+        // and creates a new Stripe price on every purchase.
+        return round($cost * 100);
     }
 }

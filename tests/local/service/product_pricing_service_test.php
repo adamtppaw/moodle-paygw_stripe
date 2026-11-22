@@ -61,6 +61,31 @@ final class product_pricing_service_test extends stripe_testcase {
     }
 
     /**
+     * Provide costs whose float product with 100 is not a whole number.
+     *
+     * @return array
+     */
+    public static function fractional_cost_provider(): array {
+        return [
+            '19.99' => [19.99, 1999.0],
+            '0.29' => [0.29, 29.0],
+            '4.35' => [4.35, 435.0],
+        ];
+    }
+
+    /**
+     * Tests unit amount is a whole number of minor units, so the stored price matches on the next purchase.
+     *
+     * @dataProvider fractional_cost_provider
+     * @param float $cost
+     * @param float $expected
+     */
+    public function test_get_unit_amount_is_whole_minor_units(float $cost, float $expected): void {
+        $service = new product_pricing_service($this->client);
+        $this->assertSame($expected, $service->get_unit_amount($cost, 'PLN'));
+    }
+
+    /**
      * Tests get_product returns null when no record exists.
      */
     public function test_get_product_returns_null_when_no_db_record(): void {
