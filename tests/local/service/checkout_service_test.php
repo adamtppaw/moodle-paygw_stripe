@@ -329,6 +329,78 @@ final class checkout_service_test extends stripe_testcase {
     }
 
     /**
+     * Store the product mapping of TA-style test sessions.
+     *
+     * @param int $itemid
+     */
+    private function map_product(int $itemid): void {
+        global $DB;
+        $DB->insert_record('paygw_stripe_products', (object)[
+            'component' => 'enrol_fee', 'paymentarea' => 'fee', 'itemid' => $itemid, 'productid' => 'prod_save_1',
+        ]);
+    }
+
+    /**
+     * A 1.39 session (metadata from the plugin) with the given buyer.
+     *
+     * @param string $sessionid
+     * @param int $userid
+     * @return Session
+     */
+    private function legacy_session(string $sessionid, int $userid): Session {
+        global $CFG;
+        $session = checkout_test_session_factory::payment_session($sessionid, 'complete', 'paid');
+        $session->metadata = \Stripe\StripeObject::constructFrom(['userid' => (string)$userid,
+            'moodle_site' => $CFG->wwwroot]);
+        return $session;
+    }
+
+    /**
+     * WSB Merito: a session started on 1.39 (no local record) is bound through the Stripe session.
+     */
+    public function test_legacy_session_is_bound_by_metadata_and_product(): void {
+        $user = $this->getDataGenerator()->create_user();
+        $other = $this->getDataGenerator()->create_user();
+        $this->map_product(7);
+        $this->mock_sessions()->method('retrieve')->willReturn($this->legacy_session('cs_legacy_1', (int)$user->id));
+        $service = new checkout_service($this->client);
+
+        $this->assertTrue($service->is_session_bound_to_request('cs_legacy_1', (int)$user->id, 'enrol_fee', 'fee', 7));
+        $this->assertFalse($service->is_session_bound_to_request('cs_legacy_1', (int)$other->id, 'enrol_fee', 'fee', 7));
+        $this->assertFalse($service->is_session_bound_to_request('cs_legacy_1', (int)$user->id, 'enrol_fee', 'fee', 8));
+    }
+
+    /**
+     * WSB Merito: a row stored by 1.39 after the payment is adopted, so the session is not delivered twice.
+     */
+    public function test_legacy_row_is_adopted_and_stays_delivered(): void {
+        global $DB;
+        $user = $this->getDataGenerator()->create_user();
+        $this->map_product(7);
+        $DB->insert_record('paygw_stripe_checkout_sessions', (object)['userid' => $user->id, 'paymentintent' => 'pi_save_1',
+            'customerid' => 'cus_save_1', 'amounttotal' => 1050, 'paymentstatus' => 'paid', 'status' => 'complete',
+            'productid' => 'prod_save_1', 'delivered' => 1]);
+        $this->mock_sessions()->method('retrieve')->willReturn($this->legacy_session('cs_legacy_2', (int)$user->id));
+        $service = new checkout_service($this->client);
+
+        $this->assertTrue($service->is_session_bound_to_request('cs_legacy_2', (int)$user->id, 'enrol_fee', 'fee', 7));
+        $this->assertTrue($service->is_delivered('cs_legacy_2'));
+        $this->assertSame(1, $DB->count_records('paygw_stripe_checkout_sessions'));
+    }
+
+    /**
+     * WSB Merito: a record created outside the buyer's request (webhook) belongs to the buyer from the session.
+     */
+    public function test_save_checkout_session_takes_buyer_from_metadata(): void {
+        global $DB;
+        $user = $this->getDataGenerator()->create_user();
+        (new checkout_service($this->client))->save_checkout_session($this->legacy_session('cs_legacy_3', (int)$user->id));
+
+        $this->assertEquals($user->id, $DB->get_field('paygw_stripe_checkout_sessions', 'userid',
+            ['checkoutsessionid' => 'cs_legacy_3']));
+    }
+
+    /**
      * Register the nested checkout sessions SDK service.
      *
      * @return MockObject Sessions service mock

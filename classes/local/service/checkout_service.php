@@ -257,9 +257,11 @@ class checkout_service {
             return;
         }
 
+        // WSB Merito: created from a webhook for a session started on 1.39, the buyer comes from the session.
+        $buyer = (int)($session->metadata->userid ?? 0) ?: (int)$USER->id;
         $record = new checkout_session(
             null,
-            (int)$USER->id,
+            $buyer,
             $session->id,
             $session->payment_intent,
             $session->customer->id,
@@ -363,7 +365,12 @@ class checkout_service {
         int $itemid
     ): bool {
         $session = $this->checkoutrepository->find_by_sessionid($sessionid);
-        if (!$session || $session->userid !== $userid) {
+        if (!$session) {
+            // WSB Merito: a Checkout session started on release 1.39 has no local record (1.39 stored it only after
+            // payment). Bind it through the session itself (deployment window, CD-009).
+            return $this->is_legacy_session_bound_to_request($sessionid, $userid, $component, $paymentarea, $itemid);
+        }
+        if ($session->userid !== $userid) {
             return false;
         }
 
@@ -375,5 +382,56 @@ class checkout_service {
         return $product->component === $component
             && $product->paymentarea === $paymentarea
             && $product->itemid === $itemid;
+    }
+
+    /**
+     * Bind a Checkout session started on release 1.39 (no local record) to the request (WSB Merito).
+     *
+     * The plugin set the buyer (metadata userid) and the product when it created the session, so the Stripe session
+     * is as trustworthy as the local record: the buyer must match and the product must map to the requested item.
+     * A row that 1.39 stored after a payment (matched by the PaymentIntent, no session id yet) is adopted, so a
+     * session already delivered by 1.39 is not delivered again.
+     *
+     * @param string $sessionid
+     * @param int $userid
+     * @param string $component
+     * @param string $paymentarea
+     * @param int $itemid
+     * @return bool
+     * @throws ApiErrorException
+     * @throws \dml_exception
+     */
+    private function is_legacy_session_bound_to_request(
+        string $sessionid,
+        int $userid,
+        string $component,
+        string $paymentarea,
+        int $itemid
+    ): bool {
+        global $CFG, $DB;
+        $session = $this->stripe->checkout->sessions->retrieve($sessionid, ['expand' => ['line_items']]);
+        if ($session->mode !== 'payment' || $userid <= 0 || (int)($session->metadata->userid ?? 0) !== $userid) {
+            return false;
+        }
+        $site = $session->metadata->moodle_site ?? null;
+        if ($site !== null && $site !== $CFG->wwwroot) {
+            return false;
+        }
+        $productid = $session->line_items->first()->price->product ?? null;
+        $product = $productid ? $this->productrepository->find_by_productid($productid) : null;
+        if (!$product || $product->component !== $component || $product->paymentarea !== $paymentarea
+                || $product->itemid !== $itemid) {
+            return false;
+        }
+        $intent = is_string($session->payment_intent) ? $session->payment_intent : ($session->payment_intent->id ?? null);
+        if ($intent) {
+            $legacy = $DB->get_record_select('paygw_stripe_checkout_sessions',
+                'paymentintent = :pi AND checkoutsessionid IS NULL AND userid = :userid',
+                ['pi' => $intent, 'userid' => $userid]);
+            if ($legacy) {
+                $DB->set_field('paygw_stripe_checkout_sessions', 'checkoutsessionid', $sessionid, ['id' => $legacy->id]);
+            }
+        }
+        return true;
     }
 }
