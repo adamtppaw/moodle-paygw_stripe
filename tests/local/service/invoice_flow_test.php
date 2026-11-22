@@ -484,6 +484,8 @@ final class invoice_flow_test extends invoice_testcase {
      */
     private function create_fee_instance(): int {
         global $DB;
+        // pay.php refuses purchases through a disabled enrolment plugin.
+        set_config('enrol_plugins_enabled', 'manual,guest,self,cohort,fee');
         $course = $this->getDataGenerator()->create_course();
         return (int)enrol_get_plugin('fee')->add_instance($course, [
             'courseid' => $course->id,
