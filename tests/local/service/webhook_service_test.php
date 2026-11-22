@@ -105,4 +105,56 @@ final class webhook_service_test extends stripe_testcase {
         $this->assertTrue($service->create_webhook(555));
         $this->assertSame('whsec_new', $DB->get_field('paygw_stripe_webhooks', 'secret', ['paymentaccountid' => 555]));
     }
+    /**
+     * New API keys of the same Stripe account (a rotated key) keep the existing endpoint and its signing secret.
+     */
+    public function test_new_keys_of_same_account_keep_endpoint(): void {
+        global $DB;
+
+        $DB->insert_record('paygw_stripe_webhooks', (object)[
+            'paymentaccountid' => 556,
+            'webhookid' => 'we_kept',
+            'secret' => 'whsec_kept',
+        ]);
+        $webhooks = $this->mock_stripe_service('webhookEndpoints', WebhookEndpointService::class);
+        $webhooks->expects($this->once())->method('retrieve')->with('we_kept')
+            ->willReturn(WebhookEndpoint::constructFrom(['id' => 'we_kept']));
+        $webhooks->expects($this->never())->method('create');
+        $webhooks->expects($this->never())->method('delete');
+        $service = new webhook_service($this->client);
+
+        $this->assertFalse($service->update_webhook_for_new_keys(556));
+        $records = $DB->get_records('paygw_stripe_webhooks', ['paymentaccountid' => 556]);
+        $this->assertCount(1, $records);
+        $this->assertSame('whsec_kept', reset($records)->secret);
+    }
+
+    /**
+     * New API keys of another Stripe account get their own endpoint; the previous one is not deleted, because the old
+     * keys may still serve another site.
+     */
+    public function test_new_keys_of_another_account_create_endpoint_without_deleting_old(): void {
+        global $DB;
+
+        $DB->insert_record('paygw_stripe_webhooks', (object)[
+            'paymentaccountid' => 557,
+            'webhookid' => 'we_other_account',
+            'secret' => 'whsec_other',
+        ]);
+        $webhooks = $this->mock_stripe_service('webhookEndpoints', WebhookEndpointService::class);
+        $webhooks->method('retrieve')->with('we_other_account')->willThrowException(
+            \Stripe\Exception\InvalidRequestException::factory('No such webhook endpoint', 404, null, null, null,
+                'resource_missing')
+        );
+        $webhooks->expects($this->once())->method('create')
+            ->willReturn(WebhookEndpoint::constructFrom(['id' => 'we_new_account', 'secret' => 'whsec_new_account']));
+        $webhooks->expects($this->never())->method('delete');
+        $service = new webhook_service($this->client);
+
+        $this->assertTrue($service->update_webhook_for_new_keys(557));
+        $records = $DB->get_records('paygw_stripe_webhooks', ['paymentaccountid' => 557]);
+        $this->assertCount(1, $records);
+        $this->assertSame('we_new_account', reset($records)->webhookid);
+        $this->assertSame('whsec_new_account', reset($records)->secret);
+    }
 }

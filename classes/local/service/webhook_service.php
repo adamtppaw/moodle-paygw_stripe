@@ -124,6 +124,24 @@ class webhook_service {
     }
 
     /**
+     * Make sure a payment account has a webhook endpoint after its API keys changed.
+     *
+     * New keys of the same Stripe account (e.g. a rotated key) can still retrieve the stored endpoint, so it is kept
+     * together with its signing secret. Keys of another Stripe account cannot see it (404): get_webhook() forgets the
+     * stored record and an endpoint is created in the new account. The previous endpoint is never deleted here, because
+     * the old keys may still serve another site (e.g. a copy of this database on a test server) and its endpoint with
+     * them.
+     *
+     * @param int $paymentaccountid
+     * @return bool True if a new endpoint was created
+     * @throws ApiErrorException
+     * @throws \dml_exception
+     */
+    public function update_webhook_for_new_keys(int $paymentaccountid): bool {
+        return $this->create_webhook($paymentaccountid);
+    }
+
+    /**
      * Add invoice events to existing endpoints without removing any subscriptions
      * or changing their API version/signing secret. Repair failed upgrade calls.
      * @param int $paymentaccountid
