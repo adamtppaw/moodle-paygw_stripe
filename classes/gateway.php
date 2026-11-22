@@ -317,7 +317,6 @@ class gateway extends \core_payment\gateway {
         array $files,
         array &$errors
     ): void {
-        global $DB;
         // WSB Merito: without dynamic payment methods at least one method has to be selected.
         $usedynamic = !isset($data->usedynamicpaymentmethods) || !empty($data->usedynamicpaymentmethods);
         if ($data->enabled && (empty($data->apikey) || empty($data->secretkey) || (!$usedynamic && empty($data->paymentmethods)))) {
@@ -342,7 +341,7 @@ class gateway extends \core_payment\gateway {
         }
 
         // Very hacky as this shouldn't live in a validation function, but due to Moodle limitations it's placed here.
-        // Check if API keys have changed, remove existing webhook and create new.
+        // Check if API keys have changed and make sure the account has a webhook endpoint reachable with the new keys.
         $existingdata = $form->get_gateway_persistent()->get_configuration();
 
         $newapikey = $data->apikey ?? null;
@@ -357,18 +356,9 @@ class gateway extends \core_payment\gateway {
         if ($apikeychanged || $secretchanged) {
             $paymentaccountid = $form->get_gateway_persistent()->get_account()->get('id');
 
-            $DB->delete_records('paygw_stripe_webhooks', ['paymentaccountid' => $paymentaccountid]);
-
             try {
-                if (is_string($oldapikey) && $oldapikey !== '' && is_string($oldsecret) && $oldsecret !== '') {
-                    $factory = new stripe_service_factory($oldapikey, $oldsecret);
-                    $webhookservice = $factory->webhook_service();
-                    $webhookservice->delete_webhook($paymentaccountid);
-                }
-
                 $factory = new stripe_service_factory($newapikey, $newsecret);
-                $webhookservice = $factory->webhook_service();
-                $webhookservice->create_webhook($paymentaccountid);
+                $factory->webhook_service()->update_webhook_for_new_keys($paymentaccountid);
             } catch (Exception $ignored) {
                 $errors['apikey'] = get_string('apiwebhookerror', 'paygw_stripe');
             }
