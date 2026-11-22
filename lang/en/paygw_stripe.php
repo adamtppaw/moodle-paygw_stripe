@@ -45,7 +45,7 @@ $string['customsubscriptioninterval:year'] = 'Year';
 $string['customsubscriptionintervalcount'] = 'Custom Subscription Period Interval';
 $string['customsubscriptionintervalcount_help'] = '';
 $string['defaulttaxbehavior'] = 'Default tax behavior';
-$string['defaulttaxbehavior_help'] = 'Default behavior of tax (inclusive, exclusive). Changeable in Stripe dashboard.';
+$string['defaulttaxbehavior_help'] = 'Default behavior of tax (inclusive, exclusive) for Stripe Tax. Only applies to the automatic tax mode; for manual tax rates this is set on the tax rate itself in the Stripe dashboard.';
 $string['enableautomatictax'] = 'Enable automatic tax';
 $string['enableautomatictax_desc'] = 'Automatic tax must be enabled and configured in the Stripe dashboard.';
 $string['failedtosetdefaultpaymentmethod'] = 'Failed to set up a payment method for subscription, please try again.';
@@ -183,7 +183,7 @@ $string['subscriptionperiod:yearly'] = 'Yearly';
 
 $string['subscriptions'] = 'Subscriptions';
 $string['subscriptionssubheading'] =
-    'This page lists the subscriptions you have purchased. You can cancel subscriptions here, cancellations will be processed immediately and you will not be able to enter the course again.';
+    'This page lists the subscriptions you have purchased. You can cancel them here – a cancelled subscription stays active until the end of the paid period, and you keep access to the courses until then.';
 
 $string['subscriptionstatus:active'] = 'Active';
 $string['subscriptionstatus:canceled'] = 'Cancelled';
