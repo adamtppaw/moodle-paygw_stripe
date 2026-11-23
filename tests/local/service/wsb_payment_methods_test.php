@@ -45,6 +45,8 @@ final class wsb_payment_methods_test extends \basic_testcase {
     }
 
     /**
+     * Checkout session parameters follow the payment method settings of the account.
+     *
      * @dataProvider config_provider
      * @param array $config
      * @param int $lookups Expected calls to get_default_payment_method_config_id()

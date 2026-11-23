@@ -45,6 +45,7 @@ if ($options['help'] || $unrecognized) {
     exit(0);
 }
 
+/** Plugin version of release 1.39 that the rollback restores. */
 const PAYGW_STRIPE_VERSION_139 = 2026110103;
 
 $dbman = $DB->get_manager();

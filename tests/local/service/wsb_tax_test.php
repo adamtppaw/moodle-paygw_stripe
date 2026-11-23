@@ -42,6 +42,8 @@ final class wsb_tax_test extends \basic_testcase {
     }
 
     /**
+     * Tax mode and manual tax rate are read from the account configuration.
+     *
      * @dataProvider config_provider
      * @param array $config
      * @param bool $automatic

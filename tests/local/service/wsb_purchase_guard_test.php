@@ -54,10 +54,14 @@ final class wsb_purchase_guard_test extends \advanced_testcase {
         $suspended = $this->getDataGenerator()->create_user();
         $plugin->enrol_user($instance, $active->id);
         $plugin->enrol_user($instance, $suspended->id, null, 0, 0, ENROL_USER_SUSPENDED);
-        $this->assertSame('purchaseunavailable_alreadyenrolled',
-            wsb_purchase_guard::get_purchase_unavailable_reason($instance, false, (int) $active->id));
-        $this->assertSame('purchaseunavailable_enrolsuspended',
-            wsb_purchase_guard::get_purchase_unavailable_reason($instance, false, (int) $suspended->id));
+        $this->assertSame(
+            'purchaseunavailable_alreadyenrolled',
+            wsb_purchase_guard::get_purchase_unavailable_reason($instance, false, (int) $active->id)
+        );
+        $this->assertSame(
+            'purchaseunavailable_enrolsuspended',
+            wsb_purchase_guard::get_purchase_unavailable_reason($instance, false, (int) $suspended->id)
+        );
         // An enrolment that has ended does not count as access.
         $ended = $this->getDataGenerator()->create_user();
         $plugin->enrol_user($instance, $ended->id, null, time() - 2 * DAYSECS, time() - DAYSECS);
@@ -68,8 +72,10 @@ final class wsb_purchase_guard_test extends \advanced_testcase {
         $instance = $this->fee_instance(['visible' => 0]);
         $user = $this->getDataGenerator()->create_user();
         $this->setUser($user);
-        $this->assertSame('purchaseunavailable_coursehidden',
-            wsb_purchase_guard::get_purchase_unavailable_reason($instance, false, (int) $user->id));
+        $this->assertSame(
+            'purchaseunavailable_coursehidden',
+            wsb_purchase_guard::get_purchase_unavailable_reason($instance, false, (int) $user->id)
+        );
         $this->assertNull(wsb_purchase_guard::get_purchase_unavailable_reason($instance, true, (int) $user->id));
     }
 
@@ -78,7 +84,8 @@ final class wsb_purchase_guard_test extends \advanced_testcase {
         $instance = $this->fee_instance();
         $DB->set_field('enrol', 'status', ENROL_INSTANCE_DISABLED, ['id' => $instance->id]);
         $this->assertSame('purchaseunavailable_enroldisabled', wsb_purchase_guard::get_purchase_unavailable_reason(
-            $DB->get_record('enrol', ['id' => $instance->id])));
+            $DB->get_record('enrol', ['id' => $instance->id])
+        ));
 
         $future = $this->fee_instance([], ['enrolstartdate' => time() + DAYSECS]);
         $this->assertSame('purchaseunavailable_notstarted', wsb_purchase_guard::get_purchase_unavailable_reason($future));
@@ -95,11 +102,15 @@ final class wsb_purchase_guard_test extends \advanced_testcase {
         $url = wsb_purchase_guard::get_return_url('enrol_fee', 'fee', (int) $visible->id, (int) $user->id, false);
         $this->assertSame('/course/view.php?id=' . $visible->courseid, $url->out_as_local_url(false));
 
-        $this->assertSame('/my/courses.php',
-            wsb_purchase_guard::get_return_url('enrol_fee', 'fee', (int) $hidden->id, (int) $user->id)->out_as_local_url(false));
-        $this->assertSame('/',
+        $this->assertSame(
+            '/my/courses.php',
+            wsb_purchase_guard::get_return_url('enrol_fee', 'fee', (int) $hidden->id, (int) $user->id)->out_as_local_url(false)
+        );
+        $this->assertSame(
+            '/',
             wsb_purchase_guard::get_return_url('enrol_fee', 'fee', (int) $hidden->id, (int) $user->id, false)
-                ->out_as_local_url(false));
+            ->out_as_local_url(false)
+        );
     }
 
     public function test_subscription_item_falls_back_to_product_mapping(): void {

@@ -155,8 +155,13 @@ class stripe_helper {
      * @param int $userid
      * @return bool True if this call delivered the purchase, false if it had been delivered already.
      */
-    public function deliver_checkout_once(string $sessionid, string $component, string $paymentarea, int $itemid,
-            int $userid): bool {
+    public function deliver_checkout_once(
+        string $sessionid,
+        string $component,
+        string $paymentarea,
+        int $itemid,
+        int $userid
+    ): bool {
         $lock = \core\lock\lock_config::get_lock_factory('paygw_stripe')->get_lock('checkout_' . hash('sha256', $sessionid), 10);
         if (!$lock) {
             throw new \moodle_exception('locktimeout');
@@ -220,8 +225,15 @@ class stripe_helper {
 
                 // WSB Merito: delivered once, under the same lock as process.php and checkout.session.completed;
                 // a webhook retry or an earlier delivery makes this a no-op.
-                if (!$this->deliver_checkout_once($session->id, $metadata['component'], $metadata['paymentarea'],
-                        (int) $metadata['itemid'], $sessionrecord->userid)) {
+                if (
+                    !$this->deliver_checkout_once(
+                        $session->id,
+                        $metadata['component'],
+                        $metadata['paymentarea'],
+                        (int) $metadata['itemid'],
+                        $sessionrecord->userid
+                    )
+                ) {
                     return true;
                 }
 
@@ -284,16 +296,25 @@ class stripe_helper {
         $itemid = (int) $metadata['itemid'];
 
         if ($session->mode === 'subscription') {
-            if (!$this->subscriptionservice->is_session_bound_to_request($session->id, $userid, $component, $paymentarea,
-                    $itemid)) {
+            if (
+                !$this->subscriptionservice->is_session_bound_to_request(
+                    $session->id,
+                    $userid,
+                    $component,
+                    $paymentarea,
+                    $itemid
+                )
+            ) {
                 return false;
             }
             try {
                 $this->subscriptionservice->fulfil_subscription($session->id, $userid, $component, $paymentarea, $itemid);
             } catch (\moodle_exception $e) {
                 // Same rule as process.php: no access for a subscription that is not active (incomplete payment).
-                debugging('paygw_stripe: subscription session ' . $session->id . ' not delivered: ' . $e->errorcode,
-                    DEBUG_DEVELOPER);
+                debugging(
+                    'paygw_stripe: subscription session ' . $session->id . ' not delivered: ' . $e->errorcode,
+                    DEBUG_DEVELOPER
+                );
             }
             return true;
         }

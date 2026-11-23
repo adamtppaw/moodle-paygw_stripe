@@ -419,15 +419,19 @@ class checkout_service {
         }
         $productid = $session->line_items->first()->price->product ?? null;
         $product = $productid ? $this->productrepository->find_by_productid($productid) : null;
-        if (!$product || $product->component !== $component || $product->paymentarea !== $paymentarea
-                || $product->itemid !== $itemid) {
+        if (
+            !$product || $product->component !== $component || $product->paymentarea !== $paymentarea
+                || $product->itemid !== $itemid
+        ) {
             return false;
         }
         $intent = is_string($session->payment_intent) ? $session->payment_intent : ($session->payment_intent->id ?? null);
         if ($intent) {
-            $legacy = $DB->get_record_select('paygw_stripe_checkout_sessions',
+            $legacy = $DB->get_record_select(
+                'paygw_stripe_checkout_sessions',
                 'paymentintent = :pi AND checkoutsessionid IS NULL AND userid = :userid',
-                ['pi' => $intent, 'userid' => $userid]);
+                ['pi' => $intent, 'userid' => $userid]
+            );
             if ($legacy) {
                 $DB->set_field('paygw_stripe_checkout_sessions', 'checkoutsessionid', $sessionid, ['id' => $legacy->id]);
             }

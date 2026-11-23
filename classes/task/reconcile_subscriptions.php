@@ -35,7 +35,6 @@ use paygw_stripe\local\service\wsb_purchase_guard;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class reconcile_subscriptions extends \core\task\scheduled_task {
-
     /** Statuses after which a subscription can no longer change in Stripe. */
     const FINAL_STATUSES = ['canceled', 'incomplete_expired'];
 
@@ -72,8 +71,12 @@ class reconcile_subscriptions extends \core\task\scheduled_task {
                 continue;
             }
             try {
-                $config = (object) helper::get_gateway_configuration($item->component, $item->paymentarea, $item->itemid,
-                        'stripe');
+                $config = (object) helper::get_gateway_configuration(
+                    $item->component,
+                    $item->paymentarea,
+                    $item->itemid,
+                    'stripe'
+                );
             } catch (\moodle_exception $e) {
                 mtrace("  SKIPPED $label: no gateway configuration for {$item->component} {$item->itemid} (" .
                         $e->getMessage() . ').');
@@ -111,8 +114,12 @@ class reconcile_subscriptions extends \core\task\scheduled_task {
         }
         mtrace('paygw_stripe: ' . implode(', ', array_map(fn($k, $v) => "$k $v", array_keys($counts), $counts)) . '.');
         if ($counts['error'] || $counts['missing']) {
-            throw new \moodle_exception('task_reconcilesubscriptions_incomplete', 'paygw_stripe', '',
-                    $counts['error'] + $counts['missing']);
+            throw new \moodle_exception(
+                'task_reconcilesubscriptions_incomplete',
+                'paygw_stripe',
+                '',
+                $counts['error'] + $counts['missing']
+            );
         }
     }
 }

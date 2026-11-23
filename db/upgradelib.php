@@ -236,8 +236,10 @@ function paygw_stripe_upgrade_bridge_schema(): array {
         if ($dbman->index_exists($intents, $intentindex)) {
             $dbman->drop_index($intents, $intentindex);
         }
-        $dbman->change_field_notnull($intents,
-            new xmldb_field('paymentintent', XMLDB_TYPE_CHAR, '100', null, null, null, null));
+        $dbman->change_field_notnull(
+            $intents,
+            new xmldb_field('paymentintent', XMLDB_TYPE_CHAR, '100', null, null, null, null)
+        );
         $dbman->rename_table($intents, 'paygw_stripe_checkout_sessions');
         $done[] = 'paygw_stripe_intents renamed to paygw_stripe_checkout_sessions';
     }

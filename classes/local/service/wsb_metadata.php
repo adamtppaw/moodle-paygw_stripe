@@ -65,8 +65,10 @@ final class wsb_metadata {
      */
     public static function product_name(string $component, $itemid, string $fallback): string {
         global $CFG, $DB;
-        if (($enrol = self::resolve_enrol_instance($component, $itemid))
-                && ($course = $DB->get_record('course', ['id' => $enrol->courseid]))) {
+        if (
+            ($enrol = self::resolve_enrol_instance($component, $itemid))
+                && ($course = $DB->get_record('course', ['id' => $enrol->courseid]))
+        ) {
             $courselang = trim((string) $course->lang);
             $polish = $courselang === '' || $courselang === 'pl' || strpos($courselang, 'pl_') === 0;
             $prefix = $polish ? 'Rejestracja na ' : 'Registration for ';
@@ -145,8 +147,10 @@ final class wsb_metadata {
         if ($fullname !== '') {
             $metadata['moodle_user_fullname'] = $fullname;
         }
-        foreach (['idnumber' => 'moodle_user_idnumber', 'institution' => 'moodle_institution',
-                'department' => 'moodle_department'] as $field => $key) {
+        foreach (
+            ['idnumber' => 'moodle_user_idnumber', 'institution' => 'moodle_institution',
+                'department' => 'moodle_department'] as $field => $key
+        ) {
             if (isset($user->$field) && trim((string) $user->$field) !== '') {
                 $metadata[$key] = (string) $user->$field;
             }

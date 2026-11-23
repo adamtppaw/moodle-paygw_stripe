@@ -45,13 +45,22 @@ final class wsb_purchase_guard {
      * @param int $itemid
      * @param int $userid
      */
-    public static function require_available(object $config, string $component, string $paymentarea, int $itemid,
-            int $userid): void {
+    public static function require_available(
+        object $config,
+        string $component,
+        string $paymentarea,
+        int $itemid,
+        int $userid
+    ): void {
         $issubscription = ($config->type ?? '') === 'subscription';
         $subscriptionsurl = new moodle_url('/payment/gateway/stripe/subscriptions.php');
         if ($issubscription && self::get_running_subscription($userid)) {
-            redirect($subscriptionsurl, get_string('purchaseunavailable_alreadysubscribed', 'paygw_stripe'), null,
-                \core\output\notification::NOTIFY_WARNING);
+            redirect(
+                $subscriptionsurl,
+                get_string('purchaseunavailable_alreadysubscribed', 'paygw_stripe'),
+                null,
+                \core\output\notification::NOTIFY_WARNING
+            );
         }
         if (!$instance = wsb_metadata::resolve_enrol_instance($component, $itemid)) {
             return;
@@ -79,8 +88,11 @@ final class wsb_purchase_guard {
      * @param int|null $userid Buyer; null skips the per-user checks.
      * @return string|null Language string identifier (paygw_stripe).
      */
-    public static function get_purchase_unavailable_reason(\stdClass $instance, bool $subscription = false,
-            ?int $userid = null): ?string {
+    public static function get_purchase_unavailable_reason(
+        \stdClass $instance,
+        bool $subscription = false,
+        ?int $userid = null
+    ): ?string {
         global $DB;
         $course = $DB->get_record('course', ['id' => $instance->courseid], 'id, visible');
         if (!$course) {
@@ -90,8 +102,10 @@ final class wsb_purchase_guard {
             return 'purchaseunavailable_alreadyenrolled';
         }
         // A suspended enrolment stays suspended after payment, so the user would pay without getting access.
-        if ($userid && $DB->record_exists('user_enrolments', ['enrolid' => $instance->id, 'userid' => $userid,
-                'status' => ENROL_USER_SUSPENDED])) {
+        if (
+            $userid && $DB->record_exists('user_enrolments', ['enrolid' => $instance->id, 'userid' => $userid,
+                'status' => ENROL_USER_SUSPENDED])
+        ) {
             return 'purchaseunavailable_enrolsuspended';
         }
         $context = \context_course::instance($course->id);
@@ -140,8 +154,14 @@ final class wsb_purchase_guard {
             return (object) ['component' => $moodlesub->component, 'paymentarea' => $moodlesub->paymentarea,
                 'itemid' => (int) $moodlesub->itemid];
         }
-        $products = $DB->get_records('paygw_stripe_products', ['productid' => $moodlesub->productid], 'id DESC',
-            'id, component, paymentarea, itemid', 0, 1);
+        $products = $DB->get_records(
+            'paygw_stripe_products',
+            ['productid' => $moodlesub->productid],
+            'id DESC',
+            'id, component, paymentarea, itemid',
+            0,
+            1
+        );
         $product = reset($products);
         return $product ? (object) ['component' => $product->component, 'paymentarea' => $product->paymentarea,
             'itemid' => (int) $product->itemid] : null;
@@ -159,19 +179,31 @@ final class wsb_purchase_guard {
      */
     public static function get_running_subscription(int $userid): ?\stdClass {
         global $DB;
-        [$notin, $params] = $DB->get_in_or_equal(['canceled', 'incomplete', 'incomplete_expired'], SQL_PARAMS_NAMED,
-            'st', false);
+        [$notin, $params] = $DB->get_in_or_equal(
+            ['canceled', 'incomplete', 'incomplete_expired'],
+            SQL_PARAMS_NAMED,
+            'st',
+            false
+        );
         $params['userid'] = $userid;
-        $candidates = $DB->get_records_select('paygw_stripe_subscriptions',
-            "userid = :userid AND (status IS NULL OR status $notin)", $params, 'id DESC');
+        $candidates = $DB->get_records_select(
+            'paygw_stripe_subscriptions',
+            "userid = :userid AND (status IS NULL OR status $notin)",
+            $params,
+            'id DESC'
+        );
         foreach ($candidates as $moodlesub) {
             $item = self::get_subscription_item($moodlesub);
             if (!$item) {
                 return $moodlesub;
             }
             try {
-                $config = (object) helper::get_gateway_configuration($item->component, $item->paymentarea, $item->itemid,
-                    'stripe');
+                $config = (object) helper::get_gateway_configuration(
+                    $item->component,
+                    $item->paymentarea,
+                    $item->itemid,
+                    'stripe'
+                );
                 $stripe = new StripeClient(['api_key' => $config->secretkey, 'stripe_version' => stripe_helper::$apiversion]);
                 try {
                     $subscription = $stripe->subscriptions->retrieve($moodlesub->subscriptionid);
@@ -213,14 +245,22 @@ final class wsb_purchase_guard {
      * @param bool $success
      * @return moodle_url
      */
-    public static function get_return_url(string $component, string $paymentarea, int $itemid, int $userid,
-            bool $success = true): moodle_url {
+    public static function get_return_url(
+        string $component,
+        string $paymentarea,
+        int $itemid,
+        int $userid,
+        bool $success = true
+    ): moodle_url {
         global $DB;
         $instance = wsb_metadata::resolve_enrol_instance($component, $itemid);
         if ($instance) {
             $visible = $DB->get_field('course', 'visible', ['id' => $instance->courseid]);
-            $canview = $visible !== false && ((int) $visible === 1 || has_capability('moodle/course:viewhiddencourses',
-                \context_course::instance($instance->courseid), $userid));
+            $canview = $visible !== false && ((int) $visible === 1 || has_capability(
+                'moodle/course:viewhiddencourses',
+                \context_course::instance($instance->courseid),
+                $userid
+            ));
             if (!$canview) {
                 return new moodle_url($success ? '/my/courses.php' : '/');
             }

@@ -51,8 +51,12 @@ try {
     $sessionmode = null;
 }
 $mismatch = function () {
-    redirect(new moodle_url('/'), get_string('sessionmismatch', 'paygw_stripe'), null,
-        \core\output\notification::NOTIFY_ERROR);
+    redirect(
+        new moodle_url('/'),
+        get_string('sessionmismatch', 'paygw_stripe'),
+        null,
+        \core\output\notification::NOTIFY_ERROR
+    );
 };
 
 if ($sessionmode === 'subscription') {
