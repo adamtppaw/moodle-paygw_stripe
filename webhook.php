@@ -88,8 +88,12 @@ if (!empty($metadata['moodle_site']) && $metadata['moodle_site'] !== $CFG->wwwro
     exit();
 }
 try {
-    $config = (object) helper::get_gateway_configuration($metadata['component'], $metadata['paymentarea'],
-        $metadata['itemid'], 'stripe');
+    $config = (object) helper::get_gateway_configuration(
+        $metadata['component'],
+        $metadata['paymentarea'],
+        $metadata['itemid'],
+        'stripe'
+    );
     $payable = helper::get_payable($metadata['component'], $metadata['paymentarea'], $metadata['itemid']);
 } catch (moodle_exception $e) {
     debugging('paygw_stripe: webhook for unknown item ' . $metadata['component'] . '/' . $metadata['paymentarea'] . '/' .

@@ -396,8 +396,11 @@ final class checkout_service_test extends stripe_testcase {
         $user = $this->getDataGenerator()->create_user();
         (new checkout_service($this->client))->save_checkout_session($this->legacy_session('cs_legacy_3', (int)$user->id));
 
-        $this->assertEquals($user->id, $DB->get_field('paygw_stripe_checkout_sessions', 'userid',
-            ['checkoutsessionid' => 'cs_legacy_3']));
+        $this->assertEquals($user->id, $DB->get_field(
+            'paygw_stripe_checkout_sessions',
+            'userid',
+            ['checkoutsessionid' => 'cs_legacy_3']
+        ));
     }
 
     /**

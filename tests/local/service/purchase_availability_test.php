@@ -65,8 +65,10 @@ final class purchase_availability_test extends \advanced_testcase {
         $instance = $this->fee_instance(['visible' => 0]);
         $user = $this->getDataGenerator()->create_user();
         $this->setUser($user);
-        $this->assertSame('purchaseunavailable_coursehidden',
-            purchase_availability::get_unavailable_reason($instance, (int) $user->id));
+        $this->assertSame(
+            'purchaseunavailable_coursehidden',
+            purchase_availability::get_unavailable_reason($instance, (int) $user->id)
+        );
     }
 
     /**
@@ -75,8 +77,10 @@ final class purchase_availability_test extends \advanced_testcase {
     public function test_disabled_instance(): void {
         $instance = $this->fee_instance([], ['status' => ENROL_INSTANCE_DISABLED]);
         $user = $this->getDataGenerator()->create_user();
-        $this->assertSame('purchaseunavailable_enroldisabled',
-            purchase_availability::get_unavailable_reason($instance, (int) $user->id));
+        $this->assertSame(
+            'purchaseunavailable_enroldisabled',
+            purchase_availability::get_unavailable_reason($instance, (int) $user->id)
+        );
     }
 
     /**
@@ -85,11 +89,15 @@ final class purchase_availability_test extends \advanced_testcase {
     public function test_enrolment_period(): void {
         $user = $this->getDataGenerator()->create_user();
         $future = $this->fee_instance([], ['enrolstartdate' => time() + DAYSECS]);
-        $this->assertSame('purchaseunavailable_notstarted',
-            purchase_availability::get_unavailable_reason($future, (int) $user->id));
+        $this->assertSame(
+            'purchaseunavailable_notstarted',
+            purchase_availability::get_unavailable_reason($future, (int) $user->id)
+        );
         $past = $this->fee_instance([], ['enrolenddate' => time() - DAYSECS]);
-        $this->assertSame('purchaseunavailable_ended',
-            purchase_availability::get_unavailable_reason($past, (int) $user->id));
+        $this->assertSame(
+            'purchaseunavailable_ended',
+            purchase_availability::get_unavailable_reason($past, (int) $user->id)
+        );
     }
 
     /**
@@ -100,13 +108,17 @@ final class purchase_availability_test extends \advanced_testcase {
         $plugin = enrol_get_plugin('fee');
         $enrolled = $this->getDataGenerator()->create_user();
         $plugin->enrol_user($instance, $enrolled->id);
-        $this->assertSame('purchaseunavailable_alreadyenrolled',
-            purchase_availability::get_unavailable_reason($instance, (int) $enrolled->id));
+        $this->assertSame(
+            'purchaseunavailable_alreadyenrolled',
+            purchase_availability::get_unavailable_reason($instance, (int) $enrolled->id)
+        );
 
         $suspended = $this->getDataGenerator()->create_user();
         $plugin->enrol_user($instance, $suspended->id, null, 0, 0, ENROL_USER_SUSPENDED);
-        $this->assertSame('purchaseunavailable_enrolsuspended',
-            purchase_availability::get_unavailable_reason($instance, (int) $suspended->id));
+        $this->assertSame(
+            'purchaseunavailable_enrolsuspended',
+            purchase_availability::get_unavailable_reason($instance, (int) $suspended->id)
+        );
 
         $expired = $this->getDataGenerator()->create_user();
         $plugin->enrol_user($instance, $expired->id, null, time() - 2 * DAYSECS, time() - DAYSECS);
