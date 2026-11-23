@@ -18,68 +18,67 @@
  * Lib functions.
  *
  * @package    paygw_stripe
- * @author     Alex Morris <alex@navra.nz>
- * @copyright  2023 Catalyst IT
+ * @copyright  Alex Morris <alex@navra.nz>
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
-
-use core_user\output\myprofile\category;
-use core_user\output\myprofile\node;
-use paygw_stripe\stripe_helper;
 
 /**
  * User profile page callback.
  *
- * Adds a section for Stripe subscriptions and a link to the Stripe customer portal.
+ * Used add a section about the subscriptions.
  *
  * @param \core_user\output\myprofile\tree $tree My profile tree where the setting will be added.
  * @param stdClass $user The user object.
- * @param bool $iscurrentuser Is this the current user viewing?
- * @return void
+ * @param bool $iscurrentuser Is this the current user viewing
+ * @return void Return if the mobile web services setting is disabled or if not the current user.
  */
-function paygw_stripe_myprofile_navigation(\core_user\output\myprofile\tree $tree, stdClass $user, bool $iscurrentuser): void {
+function paygw_stripe_myprofile_navigation(\core_user\output\myprofile\tree $tree, $user, $iscurrentuser) {
     global $USER, $DB;
 
+    // WSB Merito: nothing for a guest (no subscriptions, no Stripe customer).
     if (!$iscurrentuser || !isloggedin() || isguestuser()) {
         return;
     }
 
-    // Add category if it doesn't exist.
-    $tree->add_category(new category('paygw_stripe', get_string('profilecat', 'paygw_stripe'), 'loginactivity'));
-
-    // Link to subscription management.
-    $tree->add_node(new node(
-            'paygw_stripe',
-            'cancelsubscriptions',
-            get_string('cancelsubscriptions', 'paygw_stripe'),
-            null,
-            new moodle_url('/payment/gateway/stripe/subscriptions.php')
+    $tree->add_category(new core_user\output\myprofile\category(
+        'paygw_stripe',
+        get_string('profilecat', 'paygw_stripe'),
+        'loginactivity'
+    ));
+    $tree->add_node(new core_user\output\myprofile\node(
+        'paygw_stripe',
+        'cancelsubscriptions',
+        get_string('cancelsubscriptions', 'paygw_stripe'),
+        null,
+        new moodle_url('/payment/gateway/stripe/subscriptions.php')
     ));
 
-
-    // Link to customer portal. It only needs the user's Stripe customer and a key of the Stripe
-    // account, so any Stripe payment account will do. The account of the latest payment is tried
-    // first; its course or enrolment method may have been deleted since (then its configuration
-    // cannot be found), so the other enabled Stripe accounts are tried next.
+    // WSB Merito: link to the Stripe customer portal (invoices and receipts). It only needs the user's Stripe customer
+    // and a key of the Stripe account, so any Stripe payment account will do. The account of the latest payment is
+    // tried first; its course or enrolment method may have been deleted since, so the other enabled accounts follow.
     $portalurl = null;
     if ($DB->record_exists('payments', ['userid' => $USER->id, 'gateway' => 'stripe'])) {
         $configs = [];
-        $last = $DB->get_records('payments', ['userid' => $USER->id, 'gateway' => 'stripe'], 'id DESC', '*', 0, 1);
-        foreach ($last as $payment) {
+        foreach ($DB->get_records('payments', ['userid' => $USER->id, 'gateway' => 'stripe'], 'id DESC', '*', 0, 1) as $payment) {
             try {
                 $configs[] = (object) \core_payment\helper::get_gateway_configuration(
-                        $payment->component, $payment->paymentarea, $payment->itemid, $payment->gateway);
+                    $payment->component,
+                    $payment->paymentarea,
+                    $payment->itemid,
+                    $payment->gateway
+                );
             } catch (\moodle_exception $e) {
                 debugging('paygw_stripe: no gateway configuration for the latest payment ' . $payment->id . ': ' .
-                        $e->getMessage(), DEBUG_DEVELOPER);
+                    $e->getMessage(), DEBUG_DEVELOPER);
             }
         }
         $gateways = $DB->get_records_sql(
-                "SELECT pg.config
-                   FROM {payment_gateways} pg
-                   JOIN {payment_accounts} pa ON pa.id = pg.accountid
-                  WHERE pg.gateway = 'stripe' AND pg.enabled = 1 AND pa.enabled = 1 AND pa.archived = 0
-               ORDER BY pg.id");
+            "SELECT pg.id, pg.config
+               FROM {payment_gateways} pg
+               JOIN {payment_accounts} pa ON pa.id = pg.accountid
+              WHERE pg.gateway = 'stripe' AND pg.enabled = 1 AND pa.enabled = 1 AND pa.archived = 0
+           ORDER BY pg.id"
+        );
         foreach ($gateways as $gateway) {
             $configs[] = (object) json_decode($gateway->config, true);
         }
@@ -89,19 +88,19 @@ function paygw_stripe_myprofile_navigation(\core_user\output\myprofile\tree $tre
                 continue;
             }
             $tried[$config->secretkey] = true;
-            $helper = new \paygw_stripe\stripe_helper($config->apikey ?? '', $config->secretkey);
-            if ($portalurl = $helper->get_customer_portal_url((int) $USER->id)) {
+            $factory = new \paygw_stripe\local\service\stripe_service_factory($config->apikey ?? '', $config->secretkey);
+            if ($portalurl = $factory->customer_service()->get_customer_portal_url((int) $USER->id)) {
                 break;
             }
         }
     }
-    if (!empty($portalurl)) {
-        $tree->add_node(new node(
-                'paygw_stripe',
-                'stripeinvoices',
-                get_string('stripeinvoices', 'paygw_stripe'),
-                null,
-                new moodle_url($portalurl)
+    if ($portalurl) {
+        $tree->add_node(new core_user\output\myprofile\node(
+            'paygw_stripe',
+            'stripeinvoices',
+            get_string('stripeinvoices', 'paygw_stripe'),
+            null,
+            new moodle_url($portalurl)
         ));
     }
 }

@@ -1,0 +1,256 @@
+<?php
+// This file is part of Moodle - http://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
+
+/**
+ * Tests for product pricing service logic.
+ *
+ * @package    paygw_stripe
+ * @category   test
+ * @copyright  2026 Alex Morris
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+
+declare(strict_types=1);
+
+namespace paygw_stripe\local\service;
+
+defined('MOODLE_INTERNAL') || die();
+
+use paygw_stripe\tests\fixtures\stripe_testcase;
+use Stripe\Product;
+use Stripe\Price;
+use Stripe\Exception\InvalidRequestException;
+use Stripe\Service\ProductService;
+use Stripe\Service\PriceService;
+
+require_once(__DIR__ . '/../../fixtures/stripe_testcase.php');
+
+/**
+ * Tests for product_pricing_service.
+ *
+ * @covers \paygw_stripe\local\service\product_pricing_service
+ */
+final class product_pricing_service_test extends stripe_testcase {
+    /**
+     * Tests unit amount conversion for non-zero decimal currency.
+     */
+    public function test_get_unit_amount_for_non_zero_decimal_currency(): void {
+        $service = new product_pricing_service($this->client);
+        $this->assertSame(1050.0, $service->get_unit_amount(10.5, 'USD'));
+    }
+
+    /**
+     * Tests unit amount conversion for zero-decimal currency.
+     */
+    public function test_get_unit_amount_for_zero_decimal_currency(): void {
+        $service = new product_pricing_service($this->client);
+        $this->assertSame(10.0, $service->get_unit_amount(10.0, 'JPY'));
+    }
+
+    /**
+     * Provide costs whose float product with 100 is not a whole number.
+     *
+     * @return array
+     */
+    public static function fractional_cost_provider(): array {
+        return [
+            '19.99' => [19.99, 1999.0],
+            '0.29' => [0.29, 29.0],
+            '4.35' => [4.35, 435.0],
+        ];
+    }
+
+    /**
+     * Tests unit amount is a whole number of minor units, so the stored price matches on the next purchase.
+     *
+     * @dataProvider fractional_cost_provider
+     * @param float $cost
+     * @param float $expected
+     */
+    public function test_get_unit_amount_is_whole_minor_units(float $cost, float $expected): void {
+        $service = new product_pricing_service($this->client);
+        $this->assertSame($expected, $service->get_unit_amount($cost, 'PLN'));
+    }
+
+    /**
+     * Tests get_product returns null when no record exists.
+     */
+    public function test_get_product_returns_null_when_no_db_record(): void {
+        $service = new product_pricing_service($this->client);
+
+        $this->assertNull($service->get_product('enrol_fee', 'fee', '100'));
+    }
+
+    /**
+     * Tests get_product deletes stale DB record if Stripe retrieval fails.
+     */
+    public function test_get_product_deletes_stale_record_on_api_error(): void {
+        global $DB;
+
+        $DB->insert_record('paygw_stripe_products', (object)[
+            'component' => 'enrol_fee',
+            'paymentarea' => 'fee',
+            'itemid' => 100,
+            'productid' => 'prod_missing',
+        ]);
+
+        $products = $this->mock_stripe_service('products', ProductService::class);
+        $products->expects($this->once())->method('retrieve')->with('prod_missing')
+            ->willThrowException(InvalidRequestException::factory('Missing product'));
+        $service = new product_pricing_service($this->client);
+
+        $this->assertNull($service->get_product('enrol_fee', 'fee', '100'));
+        $this->assertFalse($DB->record_exists('paygw_stripe_products', ['itemid' => 100]));
+    }
+
+    /**
+     * Tests get_product forgets an archived Stripe product, so a new active one is created.
+     */
+    public function test_get_product_forgets_archived_product(): void {
+        global $DB;
+
+        $DB->insert_record('paygw_stripe_products', (object)[
+            'component' => 'enrol_fee',
+            'paymentarea' => 'fee',
+            'itemid' => 101,
+            'productid' => 'prod_archived',
+        ]);
+
+        $products = $this->mock_stripe_service('products', ProductService::class);
+        $products->expects($this->once())->method('retrieve')->with('prod_archived')
+            ->willReturn(Product::constructFrom(['id' => 'prod_archived', 'active' => false]));
+        $service = new product_pricing_service($this->client);
+
+        $this->assertNull($service->get_product('enrol_fee', 'fee', '101'));
+        $this->assertFalse($DB->record_exists('paygw_stripe_products', ['itemid' => 101]));
+    }
+
+    /**
+     * Tests get_product keeps an active Stripe product.
+     */
+    public function test_get_product_keeps_active_product(): void {
+        global $DB;
+
+        $DB->insert_record('paygw_stripe_products', (object)[
+            'component' => 'enrol_fee',
+            'paymentarea' => 'fee',
+            'itemid' => 102,
+            'productid' => 'prod_active',
+        ]);
+
+        $products = $this->mock_stripe_service('products', ProductService::class);
+        $products->expects($this->once())->method('retrieve')->with('prod_active')
+            ->willReturn(Product::constructFrom(['id' => 'prod_active', 'active' => true]));
+        $service = new product_pricing_service($this->client);
+
+        $this->assertSame('prod_active', $service->get_product('enrol_fee', 'fee', '102')->id);
+        $this->assertTrue($DB->record_exists('paygw_stripe_products', ['itemid' => 102]));
+    }
+
+    /**
+     * Tests get_price returns null if Stripe prices API errors.
+     */
+    public function test_get_price_returns_null_on_api_error(): void {
+        $prices = $this->mock_stripe_service('prices', PriceService::class);
+        $prices->expects($this->once())->method('all')->with(['product' => 'prod_error'])
+            ->willThrowException(InvalidRequestException::factory('Prices list error'));
+        $service = new product_pricing_service($this->client);
+
+        $product = Product::constructFrom(['id' => 'prod_error', 'name' => 'Error Product']);
+        $this->assertNull($service->get_price($product, false));
+    }
+
+    /**
+     * Tests create_price sends tax and recurring data to Stripe prices service.
+     */
+    public function test_create_price_includes_tax_and_recurring_payload(): void {
+        $service = new product_pricing_service($this->client);
+
+        $prices = $this->mock_stripe_service('prices', PriceService::class);
+        $prices->expects($this->once())->method('create')->with([
+            'currency' => 'usd',
+            'product' => 'prod_1',
+            'unit_amount' => 2500.0,
+            'tax_behavior' => 'exclusive',
+            'recurring' => ['interval' => 'month', 'interval_count' => 1],
+        ])->willReturn(Price::constructFrom(['id' => 'price_test']));
+        $service->create_price('usd', 'prod_1', 2500.0, true, 'exclusive', [
+            'interval' => 'month',
+            'interval_count' => 1,
+        ]);
+    }
+
+    /**
+     * Provide the default tax behaviour setting and the expected behaviour of an existing price without one.
+     *
+     * @return array
+     */
+    public static function default_tax_behavior_provider(): array {
+        return ['exclusive' => ['exclusive'], 'inclusive' => ['inclusive']];
+    }
+
+    /**
+     * An existing price without a tax behaviour gets the configured default once automatic tax is on.
+     *
+     * @dataProvider default_tax_behavior_provider
+     * @param string $behavior Configured default tax behaviour
+     */
+    public function test_existing_price_gets_configured_default_tax_behavior(string $behavior): void {
+        global $DB;
+
+        $DB->insert_record('paygw_stripe_products', (object)[
+            'component' => 'mod_example',
+            'paymentarea' => 'access',
+            'itemid' => 42,
+            'productid' => 'prod_tax',
+        ]);
+        $products = $this->mock_stripe_service('products', ProductService::class);
+        $products->method('retrieve')->with('prod_tax')->willReturn(Product::constructFrom([
+            'id' => 'prod_tax',
+            'object' => 'product',
+            'active' => true,
+            'name' => 'Purchase mod_example / access / 42',
+        ]));
+        $prices = $this->mock_stripe_service('prices', PriceService::class);
+        $prices->method('all')->with(['product' => 'prod_tax'])->willReturn(\Stripe\Collection::constructFrom([
+            'object' => 'list',
+            'data' => [[
+                'id' => 'price_tax',
+                'object' => 'price',
+                'active' => true,
+                'currency' => 'usd',
+                'unit_amount' => 1000,
+                'type' => 'one_time',
+                'tax_behavior' => 'unspecified',
+            ]],
+        ]));
+        $prices->expects($this->once())->method('update')->with('price_tax', ['tax_behavior' => $behavior])
+            ->willReturn(Price::constructFrom(['id' => 'price_tax', 'tax_behavior' => $behavior]));
+        $service = new product_pricing_service($this->client);
+
+        $config = (object)['enableautomatictax' => 1, 'defaulttaxbehavior' => $behavior];
+        [, $price] = $service->create_product_and_price(
+            $config,
+            new \core_payment\local\entities\payable(10.00, 'USD', 1),
+            'ignored',
+            10.00,
+            'mod_example',
+            'access',
+            '42'
+        );
+        $this->assertSame($behavior, $price->tax_behavior);
+    }
+}

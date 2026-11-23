@@ -18,15 +18,20 @@
  * Subscription list page.
  *
  * @package    paygw_stripe
- * @author     Alex Morris <alex@navra.nz>
- * @copyright  2023 Catalyst IT
+ * @copyright  Alex Morris <alex@navra.nz>
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
 use core_payment\helper;
-use paygw_stripe\stripe_helper;
+use paygw_stripe\local\repository\product_repository;
+use paygw_stripe\local\repository\subscription_repository;
+use paygw_stripe\local\service\stripe_service_factory;
+use paygw_stripe\local\service\subscription_service;
+use paygw_stripe\local\service\wsb_purchase_guard;
 
-require('../../../config.php');
+require_once(__DIR__ . '/../../../config.php');
+
+global $DB, $USER, $PAGE, $OUTPUT;
 
 require_login();
 
@@ -38,64 +43,85 @@ $PAGE->set_context(context_system::instance());
 $PAGE->set_title(get_string('subscriptions', 'paygw_stripe'));
 $PAGE->set_heading(get_string('subscriptions', 'paygw_stripe'));
 
+$repo = new subscription_repository();
+$productrepo = new product_repository();
+
 if ($subid != null) {
-    $subscription = $DB->get_record('paygw_stripe_subscriptions', ['id' => $subid], '*', MUST_EXIST);
-    // Users can manage only their own subscriptions. Without this check any logged-in user could
-    // cancel someone else's subscription (or open their customer portal) by changing the id.
-    if ((int) $subscription->userid !== (int) $USER->id) {
-        throw new moodle_exception('nopermissions', 'error', '', get_string('cancelsubscription', 'paygw_stripe'));
+    $subscription = $repo->find_by_id($subid);
+    if (!$subscription || $subscription->userid !== (int)$USER->id) {
+        throw new \moodle_exception('subscriptioninvalid', 'paygw_stripe');
     }
     if ($action == 'cancel' || $action == 'resume') {
-        // These change data: cancelling only from the confirmation form (cancel.php), resuming
-        // from the link on this page; never from a bare link without sesskey.
+        // Cancelling only from the confirmation form (cancel.php), resuming from the link on this page.
         require_sesskey();
     }
-    $product = stripe_helper::get_subscription_item($subscription);
+
+    // WSB Merito: the payment item stored with the subscription (product mapping only for older records), cancel at
+    // the end of the paid period, resume, and an understandable message instead of an exception page.
     $returnurl = new moodle_url('/payment/gateway/stripe/subscriptions.php');
+    // Redirects happen after the try block: redirect() must not be caught as an error.
+    $message = null;
+    $level = \core\output\notification::NOTIFY_SUCCESS;
     try {
+        $product = wsb_purchase_guard::get_subscription_item($DB->get_record('paygw_stripe_subscriptions', ['id' => $subid]));
         if (!$product) {
             throw new moodle_exception('subscriptionactionerror', 'paygw_stripe');
         }
-        $config = (object) helper::get_gateway_configuration($product->component, $product->paymentarea, $product->itemid,
-            'stripe');
-        $stripehelper = new stripe_helper($config->apikey, $config->secretkey);
+        $config = (object) helper::get_gateway_configuration(
+            $product->component,
+            $product->paymentarea,
+            $product->itemid,
+            'stripe'
+        );
+        $factory = new stripe_service_factory($config->apikey, $config->secretkey);
+        $subscriptionservice = $factory->subscription_service();
 
         if ($action == 'cancel') {
-            // Cancel at the end of the paid period: access stays until then (see schedule_cancellation()).
-            [$outcome, $endsat] = $stripehelper->schedule_cancellation($subscription);
+            [$outcome, $endsat] = $subscriptionservice->schedule_cancellation($subscription);
             if ($outcome === 'scheduled') {
-                $message = get_string('subscriptioncancelscheduled', 'paygw_stripe',
-                    stripe_helper::format_subscription_date($endsat));
+                $message = get_string(
+                    'subscriptioncancelscheduled',
+                    'paygw_stripe',
+                    subscription_service::format_subscription_date($endsat)
+                );
             } else if ($outcome === 'cancelled') {
                 $message = get_string('subscriptioncancelled', 'paygw_stripe');
             } else {
                 $message = get_string('subscriptionalreadycancelled', 'paygw_stripe');
             }
-            redirect($returnurl, $message, null, \core\output\notification::NOTIFY_SUCCESS);
         } else if ($action == 'resume') {
-            $renewsat = $stripehelper->resume_subscription($subscription);
+            $renewsat = $subscriptionservice->resume_subscription($subscription);
             if ($renewsat) {
-                redirect($returnurl, get_string('subscriptionresumed', 'paygw_stripe',
-                    stripe_helper::format_subscription_date($renewsat)), null, \core\output\notification::NOTIFY_SUCCESS);
+                $message = get_string(
+                    'subscriptionresumed',
+                    'paygw_stripe',
+                    subscription_service::format_subscription_date($renewsat)
+                );
+            } else {
+                $message = get_string('subscriptionnotresumable', 'paygw_stripe');
+                $level = \core\output\notification::NOTIFY_WARNING;
             }
-            redirect($returnurl, get_string('subscriptionnotresumable', 'paygw_stripe'), null,
-                \core\output\notification::NOTIFY_WARNING);
         } else if ($action == 'portal') {
-            $stripehelper->load_portal($subscription);
+            $subscriptionservice->load_portal($subscription);
         }
     } catch (\Stripe\Exception\ApiErrorException | moodle_exception $e) {
-        // Show an understandable message instead of an exception page and log the details.
-        error_log('paygw_stripe: action "' . $action . '" on subscription ' . $subscription->subscriptionid .
-            ' failed: ' . $e->getMessage());
-        redirect($returnurl, get_string('subscriptionactionerror', 'paygw_stripe'), null,
-            \core\output\notification::NOTIFY_ERROR);
+        debugging('paygw_stripe: action "' . $action . '" on subscription ' . $subscription->subscriptionid . ' failed: ' .
+            $e->getMessage(), DEBUG_DEVELOPER);
+        $message = get_string('subscriptionactionerror', 'paygw_stripe');
+        $level = \core\output\notification::NOTIFY_ERROR;
+    }
+    if ($message !== null) {
+        redirect($returnurl, $message, null, $level);
     }
 }
 
 echo $OUTPUT->header();
 
-echo html_writer::tag('p', get_string('subscriptionssubheading', 'paygw_stripe'),
-    ['class' => 'paygw_stripe-subscriptions-subheading']);
+echo html_writer::tag(
+    'p',
+    get_string('subscriptionssubheading', 'paygw_stripe'),
+    ['class' => 'paygw_stripe-subscriptions-subheading']
+);
 
 $table = new \html_table();
 $table->head = [
@@ -107,28 +133,33 @@ $table->head = [
     '',
 ];
 
-$subscriptions = $DB->get_records('paygw_stripe_subscriptions', ['userid' => $USER->id]);
+$subscriptions = $repo->find_all_by_userid((int)$USER->id);
 
 $table->data = [];
 
 foreach ($subscriptions as $subscription) {
-    $product = stripe_helper::get_subscription_item($subscription);
-    if (!$product) {
-        // Old record whose product mapping was removed (e.g. archived product); nothing to show or manage.
-        error_log('paygw_stripe: no payment item for subscription ' . $subscription->subscriptionid);
+    $product = wsb_purchase_guard::get_subscription_item($DB->get_record('paygw_stripe_subscriptions',
+        ['id' => $subscription->id]));
+    // Switching API keys can lead to products in the Moodle DB not matching what exists in Stripe, ignore and move on.
+    if ($product == null) {
         continue;
     }
     try {
-        $config = (object) helper::get_gateway_configuration($product->component, $product->paymentarea, $product->itemid,
-            'stripe');
+        $config = (object) helper::get_gateway_configuration(
+            $product->component,
+            $product->paymentarea,
+            $product->itemid,
+            'stripe'
+        );
     } catch (moodle_exception $e) {
-        // The payment account or the enrolment instance no longer exists.
-        error_log('paygw_stripe: no gateway configuration for subscription ' . $subscription->subscriptionid . ': ' .
-            $e->getMessage());
+        // WSB Merito: the payment account or the enrolment instance no longer exists – skip the row, not the page.
+        debugging('paygw_stripe: no gateway configuration for subscription ' . $subscription->subscriptionid . ': ' .
+            $e->getMessage(), DEBUG_DEVELOPER);
         continue;
     }
-    $stripehelper = new stripe_helper($config->apikey, $config->secretkey);
-    $row = $stripehelper->get_subscription_table_data($subscription);
+    $factory = new stripe_service_factory($config->apikey, $config->secretkey);
+    $subscriptionservice = $factory->subscription_service();
+    $row = $subscriptionservice->get_subscription_table_data($subscription);
     if ($row != null) {
         $table->data[] = $row;
     }

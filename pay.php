@@ -18,85 +18,179 @@
  * Redirects to the stripe checkout for payment
  *
  * @package    paygw_stripe
- * @copyright  2021 Alex Morris <alex@navra.nz>
+ * @copyright  Alex Morris <alex@navra.nz>
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
 use core_payment\helper;
+use paygw_stripe\local\service\purchase_description;
+use paygw_stripe\local\service\invoice_promotion_choices;
+use paygw_stripe\local\service\invoice_promotion_request;
+use paygw_stripe\local\service\stripe_service_factory;
+use paygw_stripe\local\service\wsb_purchase_guard;
 use paygw_stripe\stripe_helper;
 
 require_once(__DIR__ . '/../../../config.php');
 require_once(__DIR__ . '/.extlib/stripe-php/init.php');
 
-require_login();
+global $PAGE, $OUTPUT, $USER, $SESSION;
+
+require_login(null, false);
+// A guest (automatic guest login or "Log in as a guest") cannot buy: the guest account has no e-mail address of its
+// own (root@localhost by default), which Stripe rejects when the customer is created. Ask for a real login and come
+// back to the same purchase link.
+if (isguestuser()) {
+    $SESSION->wantsurl = (new moodle_url('/payment/gateway/stripe/pay.php', array_filter([
+        'component' => optional_param('component', '', PARAM_ALPHANUMEXT),
+        'paymentarea' => optional_param('paymentarea', '', PARAM_ALPHANUMEXT),
+        'itemid' => optional_param('itemid', 0, PARAM_INT),
+        'description' => optional_param('description', '', PARAM_TEXT),
+    ])))->out(false);
+    redirect(get_login_url());
+}
 
 $component = required_param('component', PARAM_ALPHANUMEXT);
 $paymentarea = required_param('paymentarea', PARAM_ALPHANUMEXT);
 $itemid = required_param('itemid', PARAM_INT);
-$description = urldecode(required_param('description', PARAM_TEXT));
+$description = purchase_description::get($component, $paymentarea, $itemid);
 $sessionid = optional_param('session_id', null, PARAM_TEXT);
 
 $config = (object) helper::get_gateway_configuration($component, $paymentarea, $itemid, 'stripe');
-$issubscription = isset($config->type) && $config->type === 'subscription';
-
-// A direct link to this page bypasses the checks Moodle does before showing the "Buy" button,
-// so refuse payment for courses that are hidden or no longer open for enrolment.
-// Hidden courses can still be bought with a subscription account (subscription plans).
-// A user who already has active access through this instance cannot pay for it again
-// (e.g. a direct link shown to enrolled users as well).
-$subscriptionsurl = new moodle_url('/payment/gateway/stripe/subscriptions.php');
-// A user with a running subscription cannot buy another one (or the same plan again); the
-// subscriptions page shows its state and lets the user resume a subscription cancelled at the
-// end of the period.
-if ($issubscription && stripe_helper::get_running_subscription($USER->id)) {
-    redirect($subscriptionsurl, get_string('purchaseunavailable_alreadysubscribed', 'paygw_stripe'), null,
-        \core\output\notification::NOTIFY_WARNING);
-}
-if ($instance = stripe_helper::resolve_enrol_instance($component, $itemid)) {
-    if ($reason = stripe_helper::get_purchase_unavailable_reason($instance, $issubscription, $USER->id)) {
-        if ($reason === 'purchaseunavailable_coursehidden') {
-            $returnurl = new moodle_url('/');
-        } else if ($reason === 'purchaseunavailable_alreadyenrolled' && $issubscription) {
-            $returnurl = $subscriptionsurl;
-        } else if ($reason === 'purchaseunavailable_alreadyenrolled') {
-            $returnurl = stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id);
-        } else {
-            // The course page, or the home page when the user cannot open the course (e.g. a hidden
-            // subscription course withdrawn from sale) instead of Moodle's "course hidden" error.
-            $returnurl = stripe_helper::get_return_url($component, $paymentarea, $itemid, $USER->id, false);
-        }
-        redirect($returnurl, get_string($reason, 'paygw_stripe'), null, \core\output\notification::NOTIFY_WARNING);
-    }
-}
-
+// WSB Merito: refuse purchases that would not give access (direct links bypass Moodle's own checks).
+wsb_purchase_guard::require_available($config, $component, $paymentarea, $itemid, (int) $USER->id);
 $payable = helper::get_payable($component, $paymentarea, $itemid);
 $surcharge = helper::get_gateway_surcharge('stripe');
 
 $cost = helper::get_rounded_cost($payable->get_amount(), $payable->get_currency(), $surcharge);
 
-$stripehelper = new stripe_helper($config->apikey, $config->secretkey);
+$factory = new stripe_service_factory($config->apikey, $config->secretkey);
+if (($config->type ?? '') === 'invoice') {
+    if (!CLI_SCRIPT) {
+        header('Cache-Control: no-store');
+        header('Referrer-Policy: no-referrer');
+    }
+    $promotioncodeid = null;
+    $promotionselected = false;
+    $promotiontoken = optional_param('promotionchoice', '', PARAM_ALPHANUM);
+    if (
+        empty($config->invoicepromotioncodes) &&
+        ($promotiontoken !== '' || optional_param('promotioncode', '', PARAM_RAW_TRIMMED) !== '')
+    ) {
+        throw new moodle_exception('invoicepromotiondisabled', 'paygw_stripe');
+    }
+    if (!empty($config->invoicepromotioncodes)) {
+        // No invoice or Portal session is created until the purchaser makes an explicit choice.
+        [$config, $payable, $cost, $identity] = invoice_promotion_request::purchase($component, $paymentarea, $itemid);
+        $choice = invoice_promotion_choices::read($promotiontoken, $identity);
+        if (!$choice) {
+            $PAGE->set_context(context_system::instance());
+            $PAGE->set_url(new moodle_url(
+                '/payment/gateway/stripe/pay.php',
+                compact('component', 'paymentarea', 'itemid')
+            ));
+            $PAGE->set_pagelayout('standard');
+            $PAGE->set_title(get_string('invoicepromotiontitle', 'paygw_stripe'));
+            $PAGE->set_heading($description);
+            $options = invoice_promotion_request::options($component, $paymentarea, $itemid, '', false);
+            $form = new \paygw_stripe\form\invoice_promotion_form(
+                null,
+                compact('component', 'paymentarea', 'itemid') + ['resume' => $options['resume']]
+            );
+            if ($form->is_cancelled()) {
+                redirect(new moodle_url('/'));
+            }
+            $selection = null;
+            if ($data = $form->get_data()) {
+                $selection = $form->get_selection();
+                if (!empty($data->continuepayment) && $selection) {
+                    $choice = invoice_promotion_choices::read($selection['token'], $identity);
+                }
+            }
+            if (!$choice) {
+                echo $OUTPUT->header();
+                echo $OUTPUT->heading(get_string('invoicepromotiontitle', 'paygw_stripe'));
+                if ($promotiontoken !== '') {
+                    echo $OUTPUT->notification(get_string('invoicepromotionexpired', 'paygw_stripe'), 'warning');
+                }
+                if ($selection) {
+                    echo $OUTPUT->notification($selection['message'], 'success');
+                }
+                $form->display();
+                echo $OUTPUT->footer();
+                exit;
+            }
+        }
+        $promotioncodeid = $choice['promotioncodeid'];
+        $promotionselected = true;
+    }
+    try {
+        $url = $factory->invoice_service()->start_payment(
+            $config,
+            $payable,
+            $description,
+            $cost,
+            $component,
+            $paymentarea,
+            $itemid,
+            $promotioncodeid,
+            $promotionselected
+        );
+    } catch (moodle_exception $e) {
+        if (
+            !empty($config->invoicepromotioncodes) &&
+            in_array($e->errorcode, ['invoicepromotioninvalid', 'invoicepromotionunavailable', 'invoicepromotionlocked'], true)
+        ) {
+            redirect(
+                new moodle_url('/payment/gateway/stripe/pay.php', compact('component', 'paymentarea', 'itemid')),
+                $e->getMessage(),
+                null,
+                \core\output\notification::NOTIFY_ERROR
+            );
+        }
+        throw $e;
+    }
+    redirect($url);
+}
+
 if (!isset($config->type) || $config->type == 'onetime') {
-    $sessionid = $stripehelper->generate_payment($config, $payable, $description, $cost, $component,
-        $paymentarea, $itemid);
+    $checkoutservice = $factory->checkout_service();
+    $sessionid = $checkoutservice->generate_payment(
+        $config,
+        $payable,
+        $description,
+        $cost,
+        $component,
+        $paymentarea,
+        $itemid
+    );
 } else {
-    $sessionid = $stripehelper->generate_subscription($config, $payable, $description, $cost, $component,
-        $paymentarea, $itemid, $sessionid);
+    $subscriptionservice = $factory->subscription_service();
+    $sessionid = $subscriptionservice->generate_subscription(
+        $config,
+        $payable,
+        $description,
+        $cost,
+        $component,
+        $paymentarea,
+        $itemid
+    );
     if ($sessionid == null) {
         redirect(new moodle_url('/'), get_string('subscriptionerror', 'paygw_stripe'));
     }
 }
 
+// phpcs:disable
 ?>
 <!DOCTYPE html>
 <html>
-<head>
-    <title>Stripe Checkout Redirect</title>
-    <script src="https://js.stripe.com/v3/"></script>
-    <script>
-        const stripe = Stripe("<?php echo $config->apikey ?>");
-        stripe.redirectToCheckout({sessionId: "<?php echo $sessionid; ?>"});
-    </script>
-</head>
-<body>
-</body>
+    <head>
+        <title>Stripe Checkout Redirect</title>
+        <script src="https://js.stripe.com/v3/"></script>
+        <script>
+            const stripe = Stripe("<?php echo $config->apikey ?>");
+            stripe.redirectToCheckout({sessionId: "<?php echo $sessionid; ?>"});
+        </script>
+    </head>
+    <body>
+    </body>
 </html>

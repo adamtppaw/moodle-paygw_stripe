@@ -1,0 +1,237 @@
+<?php
+// This file is part of Moodle - https://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+
+declare(strict_types=1);
+
+namespace paygw_stripe\local\service;
+
+use paygw_stripe\local\repository\customer_repository;
+use paygw_stripe\local\model\customer as paygw_customer;
+use Stripe\Customer;
+use Stripe\Exception\ApiErrorException;
+use Stripe\Exception\InvalidRequestException;
+use Stripe\StripeClient;
+
+/**
+ * Customer service.
+ *
+ * @package   paygw_stripe
+ * @copyright Alex Morris <alex@navra.nz>
+ * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+class customer_service {
+    /**
+     * @var StripeClient The Stripe API client.
+     */
+    private $stripe;
+
+    /**
+     * @var customer_repository The customer repository.
+     */
+    private $customerrepository;
+    /**
+     * @var locale_service Locale resolver.
+     */
+    private $localeservice;
+
+    /**
+     * Customer service constructor.
+     *
+     * @param StripeClient $stripe
+     * @param locale_service|null $localeservice
+     */
+    public function __construct(StripeClient $stripe, ?locale_service $localeservice = null) {
+        $this->stripe = $stripe;
+
+        $this->customerrepository = new customer_repository();
+        $this->localeservice = $localeservice ?? new locale_service();
+    }
+
+    /**
+     * Get the stripe Customer object from the corresponding Moodle user id.
+     *
+     * @param int $userid
+     * @return Customer|null
+     * @throws \dml_exception
+     */
+    public function get_customer(int $userid): ?Customer {
+        if (!$record = $this->customerrepository->find_by_userid($userid)) {
+            return null;
+        }
+        try {
+            $customer = $this->stripe->customers->retrieve($record->customerid);
+            if (!empty($customer->deleted)) {
+                $this->customerrepository->delete_by_userid($userid);
+                return null;
+            }
+            return $customer;
+        } catch (InvalidRequestException $e) {
+            if ($e->getStripeCode() !== 'resource_missing') {
+                throw $e;
+            }
+            // Customer exists in Moodle but not in stripe, possibly the keys were switched.
+            // Delete customer for creation later.
+            $this->customerrepository->delete_by_userid($userid);
+            return null;
+        }
+    }
+
+    /**
+     * Create a Stripe customer object and save the ID and user ID into the database.
+     *
+     * @param \stdClass $user
+     * @return Customer
+     * @throws ApiErrorException
+     * @throws \coding_exception
+     * @throws \dml_exception
+     */
+    public function create_customer($user): Customer {
+        $stripelocale = $this->localeservice->get_stripe_locale_for_user($user);
+
+        $customer = $this->stripe->customers->create([
+            'email' => $user->email,
+            'name' => fullname($user),
+            'description' => get_string('customerdescriptionuser', 'paygw_stripe', $user->id),
+            'preferred_locales' => [$stripelocale],
+            'metadata' => wsb_metadata::customer($user),
+        ]);
+        $record = new paygw_customer(
+            null,
+            (int)$user->id,
+            $customer->id,
+        );
+        $this->customerrepository->save($record);
+
+        return $customer;
+    }
+
+    /**
+     * Update the customer details based on the given user.
+     *
+     * @param Customer $customer
+     * @param \stdClass $user
+     */
+    public function update_customer_details(Customer $customer, $user) {
+        $stripelocale = $this->localeservice->get_stripe_locale_for_user($user);
+
+        // Serialize profile sync with handing billing identity over to the Portal.
+        $lock = $this->lock_customer((int)$user->id);
+        try {
+            $details = ['preferred_locales' => [$stripelocale]];
+            $record = $this->customerrepository->find_by_userid((int)$user->id);
+            if (!$record || !$record->billingmanaged) {
+                $details['email'] = $user->email;
+                // WSB Merito: keep the name entered in Checkout (often a company name for its invoices); the Moodle
+                // full name only fills an empty one. The buyer is identified by e-mail and moodle_* metadata.
+                if (empty($customer->name)) {
+                    $details['name'] = fullname($user);
+                }
+            }
+            // WSB Merito: moodle_* metadata follows the Moodle profile (only when stale).
+            $metadata = wsb_metadata::customer($user);
+            if (wsb_metadata::needs_update($customer->metadata ?? null, $metadata)) {
+                $details['metadata'] = $metadata;
+            }
+            return $this->stripe->customers->update($customer->id, $details);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Reuse the mapping without syncing Moodle profile data back to Stripe.
+     * Protect the identity before redirecting, including abandoned Portal sessions.
+     * @param \stdClass $user
+     * @return Customer
+     */
+    public function get_invoice_customer(\stdClass $user): Customer {
+        $lock = $this->lock_customer((int)$user->id);
+        try {
+            $customer = $this->get_customer((int)$user->id) ?? $this->create_customer($user);
+            $record = $this->customerrepository->find_by_userid((int)$user->id);
+            $this->customerrepository->save(new paygw_customer($record->id, $record->userid, $record->customerid, true));
+            return $customer;
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Keep profile sync disabled while any unexpired billing request uses this identity.
+     *
+     * @param int $userid Moodle user ID
+     * @param string $customerid Stripe customer ID
+     */
+    public function release_invoice_identity_if_unused(int $userid, string $customerid): void {
+        $lock = $this->lock_customer($userid);
+        try {
+            $this->customerrepository->release_billing_identity_if_unused($userid, $customerid, time());
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Reassert profile protection for a persisted billing request.
+     *
+     * @param int $userid Moodle user ID
+     * @param string $customerid Stripe customer ID
+     */
+    public function reserve_invoice_identity(int $userid, string $customerid): void {
+        $lock = $this->lock_customer($userid);
+        try {
+            $this->customerrepository->reserve_billing_identity($userid, $customerid);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Protect customer identity updates across concurrent purchase flows.
+     * @param int $userid
+     * @return \core\lock\lock
+     */
+    private function lock_customer(int $userid): \core\lock\lock {
+        $factory = \core\lock\lock_config::get_lock_factory('paygw_stripe');
+        $lock = $factory->get_lock('invoice_customer_' . $userid, 10);
+        if (!$lock) {
+            throw new \moodle_exception('invoicebusy', 'paygw_stripe');
+        }
+        return $lock;
+    }
+
+    /**
+     * A Stripe customer portal URL for the user's invoices and receipts, or null (WSB Merito).
+     *
+     * @param int $userid
+     * @return string|null Null when the user has no Stripe customer or Stripe refuses the portal session.
+     */
+    public function get_customer_portal_url(int $userid): ?string {
+        if (!$record = $this->customerrepository->find_by_userid($userid)) {
+            return null;
+        }
+        try {
+            $session = $this->stripe->billingPortal->sessions->create([
+                'customer' => $record->customerid,
+                'return_url' => (new \moodle_url('/user/profile.php'))->out(false),
+            ]);
+            return $session->url;
+        } catch (\Exception $e) {
+            debugging('paygw_stripe: customer portal error: ' . $e->getMessage(), DEBUG_DEVELOPER);
+            return null;
+        }
+    }
+}
