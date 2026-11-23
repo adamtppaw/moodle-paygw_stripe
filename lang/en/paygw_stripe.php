@@ -33,10 +33,13 @@ $string['apiwebhookerror'] = 'There was an error while creating a webhook using 
 $string['cancel'] = 'Cancel';
 $string['cancelsubscription'] = 'Cancel subscription';
 $string['cancelsubscriptionconfirm'] = 'Are you sure you wish to cancel this subscription?';
+$string['cancelsubscriptionconfirmgeneric'] = 'Are you sure you wish to cancel this subscription?';
+$string['cancelsubscriptionconfirmuntil'] = 'Are you sure you wish to cancel this subscription? It will end on {$a}. Until then you keep access to the courses and can resume the subscription on the subscriptions page.';
 $string['cancelsubscriptions'] = 'Change Subscriptions';
 $string['collectbillingaddress'] = 'Collect billing address';
 $string['collectbillingaddress_desc'] = 'Require billing address in checkout';
 $string['customerdescription'] = 'Moodle User ID: {$a}';
+$string['customerdescriptionuser'] = 'Moodle User ID: {$a}';
 $string['customsubscriptioninterval'] = 'Custom Subscription Period';
 $string['customsubscriptioninterval:day'] = 'Day';
 $string['customsubscriptioninterval:month'] = 'Month';
@@ -92,6 +95,9 @@ $string['invoicepromotionunavailable'] = 'The promotion code could not be checke
 $string['invoicepromotionwithout'] = 'Continue without a discount. Amount before final tax calculation: {$a}.';
 $string['invoicerecoveryrequired'] = 'This invoice attempt needs review. Please ask the site administrator to check Stripe before retrying the purchase.';
 $string['invoiceunavailable'] = 'This invoice is unavailable. Please contact the site administrator or restart your purchase if it was voided.';
+$string['manualtaxrate'] = 'Manual tax rate ID';
+$string['manualtaxrate_help'] = 'The ID of a Stripe Tax Rate to apply to every line item, in the form <code>txr_...</code>. Create the rate in the Stripe Dashboard under Product catalogue &gt; Tax rates (set the country, percentage, and whether it is inclusive or exclusive there). The ID is mode-specific: a test-mode rate ID is not valid in live mode, so use the rate created in the same Stripe account/mode as this gateway\'s keys. Only used when the tax mode is "Manual tax rate".';
+$string['manualtaxrate_required'] = 'A tax rate ID is required when the tax mode is set to "Manual tax rate".';
 $string['messageprovider:payment_failed'] = 'Failed delayed payment notification';
 $string['messageprovider:payment_successful'] = 'Successful delayed payment confirmation notification';
 $string['payment:failed:message'] = 'Your payment failed to clear, please check your payment details and try again.';
@@ -107,17 +113,21 @@ $string['paymentmethod:eps'] = 'EPS';
 $string['paymentmethod:giropay'] = 'giropay';
 $string['paymentmethod:ideal'] = 'iDEAL';
 $string['paymentmethod:klarna'] = 'Klarna';
+$string['paymentmethod:netbanking'] = 'NetBanking';
 $string['paymentmethod:nz_bank_account'] = 'NZ BECS Direct Debit';
 $string['paymentmethod:p24'] = 'P24';
 $string['paymentmethod:paypal'] = 'PayPal';
 $string['paymentmethod:sepa_debit'] = 'SEPA Direct Debit';
+$string['paymentmethod:sofort'] = 'Sofort';
 $string['paymentmethod:twint'] = 'TWINT';
+$string['paymentmethod:upi'] = 'UPI';
 $string['paymentmethod:wechat_pay'] = 'WeChat Pay';
 $string['paymentmethodconfiguration'] = 'Payment Method Configuration';
 $string['paymentmethodconfiguration_help'] = 'Select a Stripe Payment Method configuration to use for this gateway. Update your payment methods in the Stripe dashboard.';
 $string['paymentmethodconfigurationlink'] = 'Manage your payment methods on the <a href="https://dashboard.stripe.com/settings/payment_methods">Stripe dashboard settings page</a>.';
 $string['paymentmethodconfigurationsavekeysfirst'] = 'Save your Stripe API keys first, then select a payment method configuration.';
 $string['paymentmethods'] = 'Payment Methods';
+$string['paymentnotcompleted'] = 'The payment was not completed, so no access was granted. You can try again.';
 $string['paymentpending'] = 'Payment is pending, you will be enrolled when the payment has cleared.';
 $string['paymentsuccessful'] = 'Payment was successful';
 $string['paymenttype'] = 'Payment Type';
@@ -133,6 +143,8 @@ $string['privacy:metadata:stripe_customers'] = 'Stores the relation from Moodle 
 $string['privacy:metadata:stripe_customers:billingmanaged'] = 'Whether billing identity is maintained in Stripe instead of the Moodle profile';
 $string['privacy:metadata:stripe_customers:customerid'] = 'Customer ID returned from Stripe';
 $string['privacy:metadata:stripe_customers:userid'] = 'Moodle user ID';
+$string['privacy:metadata:stripe_intents'] = 'Stores payment intent data to track payment history';
+$string['privacy:metadata:stripe_intents:userid'] = 'Moodle user ID';
 $string['privacy:metadata:stripe_invoices'] = 'Stores pending billing flows and their Stripe invoice, purchase and payment references. Billing identity and tax information remain in Stripe.';
 $string['privacy:metadata:stripe_invoices:amounttotal'] = 'Invoice total in the smallest currency unit';
 $string['privacy:metadata:stripe_invoices:banktransfercountry'] = 'Bank country selected for the EUR invoice purchase';
@@ -162,17 +174,33 @@ $string['privacy:metadata:stripe_subscriptions:userid'] = 'Moodle user ID';
 $string['product'] = 'Product';
 $string['profilecat'] = 'Stripe Payment Subscriptions';
 $string['purchasereference'] = 'Purchase {$a->component} / {$a->paymentarea} / {$a->itemid}';
+$string['purchaseunavailable_alreadyenrolled'] = 'You already have active access, so there is nothing to pay for.';
+$string['purchaseunavailable_alreadysubscribed'] = 'You already have a subscription, so there is no need to buy another one. You can check its status below and, if it has been cancelled, resume it until the end of the paid period.';
+$string['purchaseunavailable_coursehidden'] = 'This course is no longer available for purchase.';
+$string['purchaseunavailable_ended'] = 'Enrolment in this course has ended, so it can no longer be purchased.';
+$string['purchaseunavailable_enroldisabled'] = 'Enrolment in this course is closed, so it cannot be purchased.';
+$string['purchaseunavailable_enrolsuspended'] = 'Your access to this course is suspended, so it cannot be purchased. Please contact the site administrator.';
+$string['purchaseunavailable_notstarted'] = 'Enrolment in this course has not started yet, so it cannot be purchased now.';
+$string['resumesubscription'] = 'Resume';
 $string['scheduledrenewal'] = 'Scheduled Renewal';
 $string['secretkey'] = 'Secret Key';
 $string['secretkey_help'] = 'Secret key to authenticate with Stripe';
+$string['sessionmismatch'] = 'This payment does not belong to this purchase or to this account, so no access was granted. If you have been charged, please contact the site administrator.';
 $string['status'] = 'Status';
 $string['stripeaccount'] = 'Stripe account ID';
 $string['stripeaccount_help'] = 'For creating the direct charge branding page';
+$string['stripeinvoices'] = 'Manage Stripe invoices and receipts';
+$string['subscriptionactionerror'] = 'The subscription could not be changed right now. Please try again later or contact the site administrator.';
+$string['subscriptionalreadycancelled'] = 'This subscription had already been cancelled. Its status has been updated.';
+$string['subscriptioncancelled'] = 'The subscription has been cancelled.';
+$string['subscriptioncancelscheduled'] = 'The subscription will end on {$a}. Until then you keep access to the courses and can resume it on this page.';
 $string['subscriptiondeliveryfailed'] = 'The subscription order could not be delivered. Please try again or contact the site administrator.';
+$string['subscriptionendson'] = 'Cancelled – active until {$a}';
 $string['subscriptionerror'] = 'There was an error creating the subscription, please contact the site administrator for help';
 $string['subscriptioninterval'] = 'Subscription Period';
 $string['subscriptioninvalid'] = 'Invalid subscription, please contact the site administrator for help';
 
+$string['subscriptionnotresumable'] = 'This subscription has already ended and cannot be resumed.';
 $string['subscriptionperiod:custom'] = 'Custom';
 $string['subscriptionperiod:daily'] = 'Daily';
 $string['subscriptionperiod:every3months'] = 'Every 3 Months';
@@ -181,6 +209,7 @@ $string['subscriptionperiod:monthly'] = 'Monthly';
 $string['subscriptionperiod:weekly'] = 'Weekly';
 $string['subscriptionperiod:yearly'] = 'Yearly';
 
+$string['subscriptionresumed'] = 'The subscription has been resumed and will renew on {$a}.';
 $string['subscriptions'] = 'Subscriptions';
 $string['subscriptionssubheading'] =
     'This page lists the subscriptions you have purchased. You can cancel them here – a cancelled subscription stays active until the end of the paid period, and you keep access to the courses until then.';
@@ -196,54 +225,24 @@ $string['subscriptionstatus:unpaid'] = 'Unpaid';
 
 $string['subscriptionsuccessful'] = 'Successfully subscribed. You can manage your Stripe Payment subscriptions from your profile page.';
 
+$string['task_reconcilesubscriptions'] = 'Reconcile subscription statuses with Stripe';
+$string['task_reconcilesubscriptions_incomplete'] = '{$a} subscription(s) could not be checked in Stripe - see the task log.';
 $string['taxbehavior:exclusive'] = 'Exclusive';
 $string['taxbehavior:inclusive'] = 'Inclusive';
 
+$string['taxmode'] = 'Tax mode';
+$string['taxmode:automatic'] = 'Stripe Tax (automatic)';
+$string['taxmode:manual'] = 'Manual tax rate';
+$string['taxmode:none'] = 'No tax';
+$string['taxmode_help'] = 'How the plugin handles VAT/tax on payments. These modes are mutually exclusive (Stripe does not allow combining automatic tax with manual tax rates):<br/>
+<b>No tax</b> – the plugin adds no tax.<br/>
+<b>Stripe Tax (automatic)</b> – Stripe calculates tax automatically based on your registrations and the customer\'s location. Requires Stripe Tax to be set up in the Dashboard (origin address, tax registrations, and a product tax code other than the default non-taxable one).<br/>
+<b>Manual tax rate</b> – a fixed tax rate you created in the Stripe Dashboard (e.g. Polish VAT 23%) is applied to every line item. This is the free "Tax rates" feature and does not require Stripe Tax.';
 $string['trialperiod'] = 'Trial Period';
 $string['trialperiod_help'] = 'E.g. the first interval is free. If the subscription is created on the 24th April, a month is free and billing starts on the 24th May.<br/>
     If billing happens at the start of the interval (e.g. on the 1st of the month), the pro-rated amount is waved. If a user registers on the 24th April, April is free and billing starts on the 1st May';
 $string['updatepaymentmethod'] = 'Update Payment Method';
 
-// WSB Merito – ciągi naszej wersji (upstream-sync, krok 10); porządek alfabetyczny przywróci grupa 11.11.
 $string['usedynamicpaymentmethods'] = 'Use dynamic payment methods';
 $string['usedynamicpaymentmethods_desc'] = 'Let Stripe automatically display the payment methods that are enabled in your Stripe Dashboard (Settings &gt; Payment methods), filtered by currency, amount and customer location. When enabled, the manual "Payment Methods" list below is ignored.';
 $string['usedynamicpaymentmethods_help'] = 'When enabled, the plugin no longer sends a fixed list of payment methods to Stripe. Instead it relies on the payment methods you have turned on and ordered in the Stripe Dashboard. This lets you add or remove methods (for example BLIK, P24, Apple Pay, Google Pay) without changing any plugin settings. When disabled, only the methods selected in the "Payment Methods" list are offered.';
-$string['customerdescriptionuser'] = 'Moodle User ID: {$a}';
-$string['taxmode'] = 'Tax mode';
-$string['taxmode_help'] = 'How the plugin handles VAT/tax on payments. These modes are mutually exclusive (Stripe does not allow combining automatic tax with manual tax rates):<br/>
-<b>No tax</b> – the plugin adds no tax.<br/>
-<b>Stripe Tax (automatic)</b> – Stripe calculates tax automatically based on your registrations and the customer\'s location. Requires Stripe Tax to be set up in the Dashboard (origin address, tax registrations, and a product tax code other than the default non-taxable one).<br/>
-<b>Manual tax rate</b> – a fixed tax rate you created in the Stripe Dashboard (e.g. Polish VAT 23%) is applied to every line item. This is the free "Tax rates" feature and does not require Stripe Tax.';
-$string['taxmode:none'] = 'No tax';
-$string['taxmode:automatic'] = 'Stripe Tax (automatic)';
-$string['taxmode:manual'] = 'Manual tax rate';
-$string['manualtaxrate'] = 'Manual tax rate ID';
-$string['manualtaxrate_help'] = 'The ID of a Stripe Tax Rate to apply to every line item, in the form <code>txr_...</code>. Create the rate in the Stripe Dashboard under Product catalogue &gt; Tax rates (set the country, percentage, and whether it is inclusive or exclusive there). The ID is mode-specific: a test-mode rate ID is not valid in live mode, so use the rate created in the same Stripe account/mode as this gateway\'s keys. Only used when the tax mode is "Manual tax rate".';
-$string['manualtaxrate_required'] = 'A tax rate ID is required when the tax mode is set to "Manual tax rate".';
-$string['cancelsubscriptionconfirmgeneric'] = 'Are you sure you wish to cancel this subscription?';
-$string['subscriptionactionerror'] = 'The subscription could not be changed right now. Please try again later or contact the site administrator.';
-$string['subscriptionalreadycancelled'] = 'This subscription had already been cancelled. Its status has been updated.';
-$string['subscriptioncancelled'] = 'The subscription has been cancelled.';
-$string['cancelsubscriptionconfirmuntil'] = 'Are you sure you wish to cancel this subscription? It will end on {$a}. Until then you keep access to the courses and can resume the subscription on the subscriptions page.';
-$string['resumesubscription'] = 'Resume';
-$string['subscriptioncancelscheduled'] = 'The subscription will end on {$a}. Until then you keep access to the courses and can resume it on this page.';
-$string['subscriptionendson'] = 'Cancelled – active until {$a}';
-$string['subscriptionnotresumable'] = 'This subscription has already ended and cannot be resumed.';
-$string['subscriptionresumed'] = 'The subscription has been resumed and will renew on {$a}.';
-$string['task_reconcilesubscriptions'] = 'Reconcile subscription statuses with Stripe';
-$string['task_reconcilesubscriptions_incomplete'] = '{$a} subscription(s) could not be checked in Stripe - see the task log.';
-$string['paymentmethod:sofort'] = 'Sofort';
-$string['paymentmethod:upi'] = 'UPI';
-$string['paymentmethod:netbanking'] = 'NetBanking';
-$string['privacy:metadata:stripe_intents'] = 'Stores payment intent data to track payment history';
-$string['privacy:metadata:stripe_intents:userid'] = 'Moodle user ID';
-$string['stripeinvoices'] = 'Manage Stripe invoices and receipts';
-$string['purchaseunavailable_alreadyenrolled'] = 'You already have active access, so there is nothing to pay for.';
-$string['purchaseunavailable_alreadysubscribed'] = 'You already have a subscription, so there is no need to buy another one. You can check its status below and, if it has been cancelled, resume it until the end of the paid period.';
-$string['purchaseunavailable_coursehidden'] = 'This course is no longer available for purchase.';
-$string['purchaseunavailable_enroldisabled'] = 'Enrolment in this course is closed, so it cannot be purchased.';
-$string['purchaseunavailable_ended'] = 'Enrolment in this course has ended, so it can no longer be purchased.';
-$string['purchaseunavailable_enrolsuspended'] = 'Your access to this course is suspended, so it cannot be purchased. Please contact the site administrator.';
-$string['purchaseunavailable_notstarted'] = 'Enrolment in this course has not started yet, so it cannot be purchased now.';
-$string['paymentnotcompleted'] = 'The payment was not completed, so no access was granted. You can try again.';
-$string['sessionmismatch'] = 'This payment does not belong to this purchase or to this account, so no access was granted. If you have been charged, please contact the site administrator.';

@@ -138,8 +138,10 @@ $subscriptions = $repo->find_all_by_userid((int)$USER->id);
 $table->data = [];
 
 foreach ($subscriptions as $subscription) {
-    $product = wsb_purchase_guard::get_subscription_item($DB->get_record('paygw_stripe_subscriptions',
-        ['id' => $subscription->id]));
+    $product = wsb_purchase_guard::get_subscription_item($DB->get_record(
+        'paygw_stripe_subscriptions',
+        ['id' => $subscription->id]
+    ));
     // Switching API keys can lead to products in the Moodle DB not matching what exists in Stripe, ignore and move on.
     if ($product == null) {
         continue;

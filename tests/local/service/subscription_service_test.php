@@ -390,8 +390,15 @@ final class subscription_service_test extends stripe_testcase {
             'productid' => 'prod_' . $subscriptionid,
             'priceid' => 'price_' . $subscriptionid,
         ]);
-        $moodlesub = new subscription_model((int)$id, (int)$user->id, $subscriptionid, 'cus_' . $subscriptionid, 'active',
-            'prod_' . $subscriptionid, 'price_' . $subscriptionid);
+        $moodlesub = new subscription_model(
+            (int)$id,
+            (int)$user->id,
+            $subscriptionid,
+            'cus_' . $subscriptionid,
+            'active',
+            'prod_' . $subscriptionid,
+            'price_' . $subscriptionid
+        );
         return [$user, $instance, $moodlesub];
     }
 

@@ -656,6 +656,7 @@ class subscription_service {
             ];
         } catch (ApiErrorException $err) {
             // WSB Merito: skip the row instead of breaking the page, but leave a trace for the administrator.
+            // phpcs:ignore moodle.PHP.ForbiddenFunctions.FoundWithAlternative -- must reach the server log, also with debugging off.
             error_log('paygw_stripe: cannot load subscription ' . $moodlesub->subscriptionid . ' for the list: ' .
                 $err->getMessage());
             return null;

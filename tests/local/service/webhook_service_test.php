@@ -93,8 +93,14 @@ final class webhook_service_test extends stripe_testcase {
         ]);
         $webhooks = $this->mock_stripe_service('webhookEndpoints', WebhookEndpointService::class);
         $webhooks->method('retrieve')->with('we_deleted')->willThrowException(
-            \Stripe\Exception\InvalidRequestException::factory('No such webhook endpoint', 404, null, null, null,
-                'resource_missing')
+            \Stripe\Exception\InvalidRequestException::factory(
+                'No such webhook endpoint',
+                404,
+                null,
+                null,
+                null,
+                'resource_missing'
+            )
         );
         $webhooks->expects($this->once())->method('create')
             ->willReturn(WebhookEndpoint::constructFrom(['id' => 'we_new', 'secret' => 'whsec_new']));
@@ -143,8 +149,14 @@ final class webhook_service_test extends stripe_testcase {
         ]);
         $webhooks = $this->mock_stripe_service('webhookEndpoints', WebhookEndpointService::class);
         $webhooks->method('retrieve')->with('we_other_account')->willThrowException(
-            \Stripe\Exception\InvalidRequestException::factory('No such webhook endpoint', 404, null, null, null,
-                'resource_missing')
+            \Stripe\Exception\InvalidRequestException::factory(
+                'No such webhook endpoint',
+                404,
+                null,
+                null,
+                null,
+                'resource_missing'
+            )
         );
         $webhooks->expects($this->once())->method('create')
             ->willReturn(WebhookEndpoint::constructFrom(['id' => 'we_new_account', 'secret' => 'whsec_new_account']));

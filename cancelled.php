@@ -35,8 +35,13 @@ $url = new moodle_url('/');
 
 if ($component && $paymentarea && $itemid) {
     // WSB Merito: back to the course, or home for a course the user cannot open (hidden subscription course).
-    $url = \paygw_stripe\local\service\wsb_purchase_guard::get_return_url($component, $paymentarea, $itemid,
-        (int) $USER->id, false);
+    $url = \paygw_stripe\local\service\wsb_purchase_guard::get_return_url(
+        $component,
+        $paymentarea,
+        $itemid,
+        (int) $USER->id,
+        false
+    );
 }
 
 redirect($url, get_string('paymentcancelled', 'paygw_stripe'));
